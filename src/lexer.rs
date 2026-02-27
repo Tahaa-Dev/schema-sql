@@ -1,4 +1,7 @@
-use crate::{IntervalField, LexError, SqlColumn, SqlType};
+use crate::{
+    GistBufMode, IndexMethod, IndexNullOrder, IndexSortOrder, IntervalField,
+    SqlColumn, SqlIndexColumn, SqlType, SupportedDBs,
+};
 
 use nom::{
     IResult, Parser,
@@ -7,62 +10,344 @@ use nom::{
     character::complete::{alphanumeric1, digit1, multispace0, multispace1},
     combinator::{map_res, opt, recognize, value},
     multi::{many0, many1, separated_list1},
-    sequence::{delimited, preceded},
+    sequence::{delimited, preceded, separated_pair, terminated},
 };
 
-pub(crate) fn parse_statement(db: SupportedDBs, input: &str) -> IResult<&str, Created> {
+pub(crate) fn parse_statement(
+    _db: SupportedDBs,
+    input: &str,
+) -> IResult<&str, Created> {
+    let (input, _) = multispace0(input)?;
+
     let (input, _) = tag_no_case("CREATE")(input)?;
 
     let (input, _) = multispace1(input)?;
 
-    let (input, output) = alt((tag_no_case("TABLE"), tag_no_case("INDEX"))).parse(input)?;
+    let (input, output) = alt((
+        tag_no_case("TABLE"),
+        recognize((opt(tag_no_case("UNIQUE")), tag_no_case("INDEX"))),
+    ))
+    .parse(input)?;
 
-    match output.to_uppercase().as_str() {
+    let output = output.to_uppercase();
+
+    match output.as_str() {
         "TABLE" => {
             let (input, _) = multispace1(input)?;
 
             let (input, _) = opt((
-                multispace1,
                 tag_no_case("IF"),
                 multispace1,
                 tag_no_case("NOT"),
                 multispace1,
                 tag_no_case("EXISTS"),
+                multispace1,
             ))
             .parse(input)?;
 
-            let (input, _) = multispace1(input)?;
             let (input, table_name) = parse_ident(input)?;
             let (input, _) = multispace0(input)?;
 
-            let (input, cols) =
-                delimited(tag("("), separated_list1((multispace0, tag(","), multispace0), parse_col_def), tag(")"))
-                    .parse(input)?;
+            let (input, cols) = delimited(
+                tag("("),
+                separated_list1(
+                    (multispace0, tag(","), multispace0),
+                    parse_col_def,
+                ),
+                tag(")"),
+            )
+            .parse(input)?;
 
             Ok((
                 input,
-                Created::Table {
-                    name: table_name.to_string(),
-                    columns: cols,
-                },
+                Created::Table { name: table_name.to_string(), columns: cols },
             ))
         }
 
-        // temporary return
-        "INDEX" => Ok((
-            input,
-            Created::Table {
-                name: "col".to_string(),
-                columns: vec![SqlColumn {
-                    name: "col".to_string(),
-                    sql_type: SqlType::SmallInt,
-                    is_indexed: false,
-                    not_null: false,
-                }],
-            },
-        )),
+        _ => {
+            let is_unique = &output[..6] == "UNIQUE";
 
-        _ => unreachable!(),
+            let (input, _) = multispace1(input)?;
+
+            let (input, concurrent) =
+                opt(terminated(tag_no_case("CONCURRENTLY"), multispace1))
+                    .parse(input)?;
+            let concurrent = concurrent.is_some();
+
+            let (input, _) = multispace1(input)?;
+
+            let (input, _) = opt((
+                tag_no_case("IF"),
+                multispace1,
+                tag_no_case("NOT"),
+                multispace1,
+                tag_no_case("EXISTS"),
+                multispace1,
+            ))
+            .parse(input)?;
+
+            let (input, index_name) =
+                opt(terminated(parse_ident, multispace1)).parse(input)?;
+
+            let (input, table_name) =
+                preceded((tag_no_case("ON"), multispace1), parse_ident)
+                    .parse(input)?;
+
+            let (input, _) = multispace1(input)?;
+
+            let (input, idx_method) = opt(preceded(
+                (tag_no_case("USING"), multispace1),
+                alphanumeric1,
+            ))
+            .parse(input)?;
+
+            let mut index_method =
+                idx_method.map(|s: &str| match s.to_uppercase().as_str() {
+                    "BTREE" => IndexMethod::BTree { fillfactor: None },
+                    "HASH" => IndexMethod::Hash { fillfactor: None },
+                    "GIN" => IndexMethod::Gin {
+                        fastupdate: None,
+                        gin_pending_list_limit: None,
+                    },
+                    "GIST" => {
+                        IndexMethod::Gist { fillfactor: None, buffering: None }
+                    }
+                    "BRIN" => IndexMethod::Brin {
+                        pages_per_range: None,
+                        autosummarize: None,
+                    },
+                    "SPGIST" => IndexMethod::SpGist { fillfactor: None },
+                    _ => IndexMethod::Other,
+                });
+
+            if let Some(IndexMethod::Other) = index_method {
+                return Err(nom::Err::Failure(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::IsNot,
+                )));
+            }
+
+            let (input, _) = multispace1(input)?;
+
+            let (input, cols) = delimited(
+                tag("("),
+                separated_list1(
+                    (multispace0, tag(","), multispace0),
+                    map_res(
+                        (
+                            alt((
+                                recognize((
+                                    alphanumeric1,
+                                    multispace0,
+                                    tag("("),
+                                    multispace0,
+                                    parse_ident,
+                                    multispace0,
+                                    tag(")"),
+                                )),
+                                parse_ident,
+                            )),
+
+                            opt(preceded(multispace1, parse_ident)),
+                            opt(preceded(
+                                multispace1,
+                                alt((
+                                    value(
+                                        IndexSortOrder::Asc,
+                                        tag_no_case("ASC"),
+                                    ),
+                                    value(
+                                        IndexSortOrder::Desc,
+                                        tag_no_case("DESC"),
+                                    ),
+                                )),
+                            )),
+                            opt(preceded(
+                                multispace1,
+                                alt((
+                                    value(
+                                        IndexNullOrder::NullsFirst,
+                                        (
+                                            tag_no_case("NULLS"),
+                                            multispace1,
+                                            tag_no_case("FIRST"),
+                                        ),
+                                    ),
+                                    value(
+                                        IndexNullOrder::NullsLast,
+                                        (
+                                            tag_no_case("NULLS"),
+                                            multispace1,
+                                            tag_no_case("LAST"),
+                                        ),
+                                    ),
+                                )),
+                            )),
+                        ),
+                        |(name, opclass, sort1, sort2)| {
+                            Ok::<
+                                SqlIndexColumn,
+                                nom::Err<nom::error::Error<&str>>,
+                            >(SqlIndexColumn {
+                                name: name.to_string(),
+                                opclass: opclass.map(String::from),
+                                sort_order: sort1,
+                                null_order: sort2,
+                            })
+                        },
+                    ),
+                ),
+                tag(")"),
+            )
+            .parse(input)?;
+
+            let (input, _) = multispace1(input)?;
+
+            let (input, pairs) = opt(preceded(
+                (tag_no_case("WITH"), multispace1),
+                delimited(
+                    tag("("),
+                    separated_list1(
+                        (multispace0, tag(","), multispace0),
+                        separated_pair(
+                            parse_ident,
+                            (multispace0, tag("="), multispace0),
+                            alphanumeric1,
+                        ),
+                    ),
+                    tag(")"),
+                ),
+            ))
+            .parse(input)?;
+
+            let idx_method = if pairs.is_some() {
+                idx_method.ok_or(nom::Err::Failure(nom::error::Error::new(
+                    idx_method.unwrap_or(""),
+                    nom::error::ErrorKind::ManyTill,
+                )))?
+            } else {
+                ""
+            };
+
+            for (key, value) in pairs.unwrap_or(vec![]) {
+                let res = match key.to_lowercase().as_str() {
+                    "fillfactor" => {
+                        let v = value.parse().map_err(|_| {
+                            nom::Err::Failure(nom::error::Error::new(
+                                value,
+                                nom::error::ErrorKind::Count,
+                            ))
+                        })?;
+
+                        let mut r = Ok(());
+                        index_method.as_mut().map(|m| r = m.set_fillfactor(v));
+                        r
+                    }
+
+                    "fastupdate" => {
+                        let v = value.parse().map_err(|_| {
+                            nom::Err::Failure(nom::error::Error::new(
+                                value,
+                                nom::error::ErrorKind::Count,
+                            ))
+                        })?;
+
+                        let mut r = Ok(());
+                        index_method.as_mut().map(|m| r = m.set_fastupdate(v));
+                        r
+                    }
+
+                    "gin_pending_list_limit" => {
+                        let v = value.parse().map_err(|_| {
+                            nom::Err::Failure(nom::error::Error::new(
+                                value,
+                                nom::error::ErrorKind::Count,
+                            ))
+                        })?;
+
+                        let mut r = Ok(());
+                        index_method
+                            .as_mut()
+                            .map(|m| r = m.set_gin_pending_list_limit(v));
+                        r
+                    }
+
+                    "buffering" => {
+                        let v = match value.to_uppercase().as_str() {
+                            "ON" | "TRUE" => GistBufMode::On,
+                            "OFF" | "FALSE" => GistBufMode::Off,
+                            "AUTO" => GistBufMode::Auto,
+                            _ => {
+                                return Err(nom::Err::Failure(
+                                    nom::error::Error::new(
+                                        value,
+                                        nom::error::ErrorKind::Count,
+                                    ),
+                                ));
+                            }
+                        };
+
+                        let mut r = Ok(());
+                        index_method.as_mut().map(|m| r = m.set_buffering(v));
+                        r
+                    }
+
+                    "autosummarize" => {
+                        let v = match value.to_uppercase().as_str() {
+                            "ON" | "TRUE" => true,
+                            "OFF" | "FALSE" => false,
+                            _ => return Err(nom::Err::Failure(nom::error::Error::new(
+                                value,
+                                nom::error::ErrorKind::Count,
+                            ))),
+                        };
+
+                        let mut r = Ok(());
+                        index_method
+                            .as_mut()
+                            .map(|m| r = m.set_autosummarize(v));
+                        r
+                    }
+
+                    "pages_per_range" => {
+                        let v = value.parse().map_err(|_| {
+                            nom::Err::Failure(nom::error::Error::new(
+                                value,
+                                nom::error::ErrorKind::Count,
+                            ))
+                        })?;
+
+                        let mut r = Ok(());
+                        index_method
+                            .as_mut()
+                            .map(|m| r = m.set_pages_per_range(v));
+                        r
+                    }
+
+                    _ => Err(()),
+                };
+
+                res.map_err(|_| {
+                    nom::Err::Failure(nom::error::Error::new(
+                        idx_method,
+                        nom::error::ErrorKind::NoneOf,
+                    ))
+                })?;
+            }
+
+            // temporary return
+            Ok((
+                input,
+                Created::Index {
+                    name: index_name.map(String::from),
+                    table_name: table_name.to_string(),
+                    method: index_method,
+                    columns: cols,
+                    concurrent,
+                    is_unique,
+                },
+            ))
+        }
     }
 }
 
@@ -114,12 +399,20 @@ fn parse_col_def(input: &str) -> IResult<&str, SqlColumn> {
         "BIGINT" | "INT8" => SqlType::BigInt,
         "REAL" | "FLOAT4" => SqlType::Real,
         "DOUBLE PRECISION" | "FLOAT8" => SqlType::DoublePrecision,
-        "DECIMAL" => SqlType::Decimal(args.get(0).copied(), args.get(1).copied()),
-        "NUMERIC" => SqlType::Numeric(args.get(0).copied(), args.get(1).copied()),
+        "DECIMAL" => {
+            SqlType::Decimal(args.get(0).copied(), args.get(1).copied())
+        }
+        "NUMERIC" => {
+            SqlType::Numeric(args.get(0).copied(), args.get(1).copied())
+        }
 
         // String/Text
-        "CHAR" | "CHARACTER" => SqlType::Char(args.get(0).copied().unwrap_or(1)),
-        "VARCHAR" | "CHARACTER VARYING" => SqlType::VarChar(args.get(0).copied()),
+        "CHAR" | "CHARACTER" => {
+            SqlType::Char(args.get(0).copied().unwrap_or(1))
+        }
+        "VARCHAR" | "CHARACTER VARYING" => {
+            SqlType::VarChar(args.get(0).copied())
+        }
         "TEXT" => SqlType::Text,
 
         // Binary
@@ -148,7 +441,7 @@ fn parse_col_def(input: &str) -> IResult<&str, SqlColumn> {
                 "INTERVAL" => IntervalField::None,
                 _ => unreachable!(),
             },
-            
+
             precision: args.get(0).copied(),
         },
 
@@ -192,7 +485,7 @@ fn parse_col_def(input: &str) -> IResult<&str, SqlColumn> {
     let mut is_indexed = false;
     let mut not_null = false;
 
-    pk.unwrap_or(Vec::new()).iter().for_each(|s| match *s {
+    pk.as_deref().unwrap_or(&[]).iter().for_each(|s| match *s {
         "PRIMARY KEY" => {
             is_indexed = true;
             not_null = true;
@@ -233,12 +526,11 @@ pub(crate) enum Created {
     },
 
     Index {
-        name: String,
+        name: Option<String>,
         table_name: String,
-        columns: Vec<String>,
+        method: Option<IndexMethod>,
+        columns: Vec<SqlIndexColumn>,
+        concurrent: bool,
+        is_unique: bool,
     },
-}
-
-pub enum SupportedDBs {
-    Postgres,
 }
