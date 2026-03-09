@@ -1,9 +1,11 @@
+#![allow(clippy::manual_inspect)] // Cannot use inspect since it returns immutable references
+
 use crate::{
     Error, GistBufMode, IndexMethod, IndexNullOrder, IndexSortOrder,
-    IntervalField, Result, SqlColumn, SqlIndexColumn, SqlType, SupportedDBs,
+    IntervalField, Map, Result, SqlColumn, SqlIndexColumn, SqlType,
+    SupportedDBs,
 };
 
-use indexmap::IndexMap;
 use nom::{
     IResult, Parser,
     branch::alt,
@@ -17,7 +19,7 @@ use nom::{
 pub(crate) fn parse_statement(
     _db: SupportedDBs,
     input: &str,
-) -> Result<(&str, Created)> {
+) -> Result<(&str, Created<'_>)> {
     let (input, _) = multispace0(input)?;
 
     let (input, _) = tag_no_case("CREATE")(input)?;
@@ -34,7 +36,9 @@ pub(crate) fn parse_statement(
 
     match output.as_str() {
         "TABLE" => {
-            let mut columns = IndexMap::new();
+            let mut columns = Map::new();
+
+            let mut primary_key = None;
 
             let parse_col_def = |input| {
                 let (input, col_name) = parse_ident(input)?;
@@ -86,20 +90,20 @@ pub(crate) fn parse_statement(
                     "REAL" | "FLOAT4" => SqlType::Real,
                     "DOUBLE PRECISION" | "FLOAT8" => SqlType::DoublePrecision,
                     "DECIMAL" => SqlType::Decimal(
-                        args.get(0).copied(),
+                        args.first().copied(),
                         args.get(1).copied(),
                     ),
                     "NUMERIC" => SqlType::Numeric(
-                        args.get(0).copied(),
+                        args.first().copied(),
                         args.get(1).copied(),
                     ),
 
                     // String/Text
                     "CHAR" | "CHARACTER" => {
-                        SqlType::Char(args.get(0).copied().unwrap_or(1))
+                        SqlType::Char(args.first().copied().unwrap_or(1))
                     }
                     "VARCHAR" | "CHARACTER VARYING" => {
-                        SqlType::VarChar(args.get(0).copied())
+                        SqlType::VarChar(args.first().copied())
                     }
                     "TEXT" => SqlType::Text,
 
@@ -108,13 +112,13 @@ pub(crate) fn parse_statement(
 
                     // Date/Time
                     "TIMESTAMP" | "TIMESTAMP WITHOUT TIME ZONE" => {
-                        SqlType::Timestamp(args.get(0).copied())
+                        SqlType::Timestamp(args.first().copied())
                     }
                     "TIMESTAMPTZ" | "TIMESTAMP WITH TIME ZONE" => {
-                        SqlType::Timestamptz(args.get(0).copied())
+                        SqlType::Timestamptz(args.first().copied())
                     }
                     "DATE" => SqlType::Date,
-                    "TIME" => SqlType::Time(args.get(0).copied()),
+                    "TIME" => SqlType::Time(args.first().copied()),
                     _ if &ty[0..7] == "INTERVAL" => SqlType::Interval {
                         fields: match ty.as_str() {
                             "INTERVAL YEAR" => IntervalField::Year,
@@ -146,7 +150,7 @@ pub(crate) fn parse_statement(
                             _ => unreachable!(),
                         },
 
-                        precision: args.get(0).copied(),
+                        precision: args.first().copied(),
                     },
 
                     // Boolean
@@ -190,19 +194,33 @@ pub(crate) fn parse_statement(
                 let mut not_null = false;
                 let mut index = None;
 
-                pk.as_deref().unwrap_or(&[]).iter().for_each(|s| match *s {
-                    "PRIMARY KEY" => {
-                        not_null = true;
-                        is_primary_key = true;
-                        index = Some(SqlIndexColumn::default());
+                for s in pk.unwrap_or(vec![]) {
+                    match s.to_uppercase().as_str() {
+                        "PRIMARY KEY" => {
+                            not_null = true;
+                            is_primary_key = true;
+
+                            if primary_key.is_some() {
+                                return Err(nom::Err::Failure(
+                                    nom::error::Error::new(
+                                        s,
+                                        nom::error::ErrorKind::OneOf,
+                                    ),
+                                ));
+                            } else {
+                                primary_key = Some(col_name.to_string());
+                            }
+
+                            index = Some(SqlIndexColumn::default());
+                        }
+
+                        "UNIQUE" => index = Some(SqlIndexColumn::default()),
+
+                        "NOT NULL" => not_null = true,
+
+                        _ => {}
                     }
-
-                    "UNIQUE" => index = Some(SqlIndexColumn::default()),
-
-                    "NOT NULL" => not_null = true,
-
-                    _ => {}
-                });
+                }
 
                 let ret = columns.insert(
                     col_name.to_string(),
@@ -218,6 +236,7 @@ pub(crate) fn parse_statement(
 
                 Ok((input, ()))
             };
+
             let (input, _) = multispace1(input)?;
 
             let (input, _) = opt((
@@ -245,7 +264,11 @@ pub(crate) fn parse_statement(
 
             Ok((
                 input,
-                Created::Table { name: table_name.to_string(), columns },
+                Created::Table {
+                    name: table_name.to_string(),
+                    columns,
+                    primary_key,
+                },
             ))
         }
 
@@ -369,10 +392,10 @@ pub(crate) fn parse_statement(
                         ),
                         |(name, opclass, sort1, sort2)| {
                             Ok::<
-                                (String, SqlIndexColumn),
+                                (&str, SqlIndexColumn),
                                 nom::Err<nom::error::Error<&str>>,
                             >((
-                                name.to_string(),
+                                name,
                                 SqlIndexColumn {
                                     name: index_name.map(String::from),
                                     opclass: opclass.map(String::from),
@@ -420,7 +443,10 @@ pub(crate) fn parse_statement(
                         let v = value.parse()?;
 
                         let mut r = Ok(());
-                        index_method.as_mut().map(|m| r = m.set_fillfactor(v));
+                        index_method.as_mut().map(|m| {
+                            r = m.set_fillfactor(v);
+                            m
+                        });
                         r
                     }
 
@@ -428,7 +454,10 @@ pub(crate) fn parse_statement(
                         let v = value.parse()?;
 
                         let mut r = Ok(());
-                        index_method.as_mut().map(|m| r = m.set_fastupdate(v));
+                        index_method.as_mut().map(|m| {
+                            r = m.set_fastupdate(v);
+                            m
+                        });
                         r
                     }
 
@@ -436,9 +465,10 @@ pub(crate) fn parse_statement(
                         let v = value.parse()?;
 
                         let mut r = Ok(());
-                        index_method
-                            .as_mut()
-                            .map(|m| r = m.set_gin_pending_list_limit(v));
+                        index_method.as_mut().map(|m| {
+                            r = m.set_gin_pending_list_limit(v);
+                            m
+                        });
                         r
                     }
 
@@ -453,7 +483,10 @@ pub(crate) fn parse_statement(
                         };
 
                         let mut r = Ok(());
-                        index_method.as_mut().map(|m| r = m.set_buffering(v));
+                        index_method.as_mut().map(|m| {
+                            r = m.set_buffering(v);
+                            m
+                        });
                         r
                     }
 
@@ -465,9 +498,10 @@ pub(crate) fn parse_statement(
                         };
 
                         let mut r = Ok(());
-                        index_method
-                            .as_mut()
-                            .map(|m| r = m.set_autosummarize(v));
+                        index_method.as_mut().map(|m| {
+                            r = m.set_autosummarize(v);
+                            m
+                        });
                         r
                     }
 
@@ -475,9 +509,11 @@ pub(crate) fn parse_statement(
                         let v = value.parse()?;
 
                         let mut r = Ok(());
-                        index_method
-                            .as_mut()
-                            .map(|m| r = m.set_pages_per_range(v));
+
+                        index_method.as_mut().map(|m| {
+                            r = m.set_pages_per_range(v);
+                            m
+                        });
                         r
                     }
 
@@ -511,16 +547,17 @@ fn parse_ident(input: &str) -> IResult<&str, &str> {
     .parse(input)
 }
 
-pub(crate) enum Created {
+pub(crate) enum Created<'a> {
     Table {
         name: String,
-        columns: IndexMap<String, SqlColumn>,
+        columns: Map,
+        primary_key: Option<String>,
     },
 
     Index {
         name: Option<String>,
         table_name: String,
-        columns: Vec<(String, SqlIndexColumn)>,
+        columns: Vec<(&'a str, SqlIndexColumn)>,
         concurrent: bool,
         is_unique: bool,
     },

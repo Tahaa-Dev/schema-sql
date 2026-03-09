@@ -185,7 +185,3 @@ pub enum IntervalField {
     MinuteToSecond,
     None,
 }
-
-pub enum SupportedDBs {
-    Postgres,
-}

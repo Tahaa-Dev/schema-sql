@@ -43,6 +43,8 @@ dependencies = [
 name = "sqllex"
 version = "0.1.0"
 dependencies = [
+ "equivalent",
  "indexmap",
+ "memchr",
  "nom",
 ]

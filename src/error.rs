@@ -77,7 +77,9 @@ impl<'a> From<nom::Err<nom::error::Error<&'a str>>> for Error {
                         Error::UnexpectedToken(input, "<NUMBER>".into())
                     }
 
-                    nom::error::ErrorKind::OneOf => Error::DuplicateIdent(input),
+                    nom::error::ErrorKind::OneOf => {
+                        Error::DuplicateIdent(input)
+                    }
 
                     _ => Error::ParseFailure(input),
                 }

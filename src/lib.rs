@@ -1,8 +1,12 @@
-mod db;
+mod column;
 mod error;
 mod lexer;
-mod table;
+mod schema;
 
-pub use db::*;
+pub use column::*;
 pub(crate) use error::*;
-pub use table::*;
+pub use schema::*;
+
+pub enum SupportedDBs {
+    Postgres,
+}

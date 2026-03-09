@@ -3,7 +3,8 @@ name = "sqllex"
 version = "0.1.0"
 edition = "2024"
 
-
 [dependencies]
+equivalent = "1.0.2"
 indexmap = "2.13.0"
+memchr = "2.8.0"
 nom = "8.0.0"
