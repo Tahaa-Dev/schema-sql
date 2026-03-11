@@ -1,9 +1,8 @@
 #![allow(clippy::manual_inspect)] // Cannot use inspect since it returns immutable references
 
 use crate::{
-    Error, GistBufMode, IndexMethod, IndexNullOrder, IndexSortOrder,
-    IntervalField, Map, Result, SqlColumn, SqlIndexColumn, SqlType,
-    SupportedDBs,
+    ColMap, Error, GistBufMode, IndexMethod, IndexNullOrder, IndexSortOrder,
+    IntervalField, Result, SqlColumn, SqlIndexColumn, SqlType, SupportedDBs,
 };
 
 use nom::{
@@ -36,7 +35,7 @@ pub(crate) fn parse_statement(
 
     match output.as_str() {
         "TABLE" => {
-            let mut columns = Map::new();
+            let mut columns = ColMap::new();
 
             let mut primary_key = None;
 
@@ -222,12 +221,12 @@ pub(crate) fn parse_statement(
                     }
                 }
 
-                let ret = columns.insert(
-                    col_name.to_string(),
-                    SqlColumn { sql_type, index, not_null, is_primary_key },
-                );
-
-                if ret.is_some() {
+                if !columns.contains_key(col_name) {
+                    columns.insert(
+                        col_name.to_string(),
+                        SqlColumn { sql_type, index, not_null, is_primary_key },
+                    );
+                } else {
                     return Err(nom::Err::Failure(nom::error::Error::new(
                         col_name,
                         nom::error::ErrorKind::OneOf,
@@ -280,7 +279,7 @@ pub(crate) fn parse_statement(
             let (input, concurrent) =
                 opt(terminated(tag_no_case("CONCURRENTLY"), multispace1))
                     .parse(input)?;
-            let concurrent = concurrent.is_some();
+            let is_concurrent = concurrent.is_some();
 
             let (input, _) = multispace1(input)?;
 
@@ -402,6 +401,8 @@ pub(crate) fn parse_statement(
                                     sort_order: sort1,
                                     null_order: sort2,
                                     method: index_method,
+                                    is_concurrent,
+                                    is_unique,
                                 },
                             ))
                         },
@@ -526,11 +527,8 @@ pub(crate) fn parse_statement(
             Ok((
                 input,
                 Created::Index {
-                    name: index_name.map(String::from),
-                    table_name: table_name.to_string(),
+                    table_name,
                     columns: cols,
-                    concurrent,
-                    is_unique,
                 },
             ))
         }
@@ -550,15 +548,12 @@ fn parse_ident(input: &str) -> IResult<&str, &str> {
 pub(crate) enum Created<'a> {
     Table {
         name: String,
-        columns: Map,
+        columns: ColMap,
         primary_key: Option<String>,
     },
 
     Index {
-        name: Option<String>,
-        table_name: String,
+        table_name: &'a str,
         columns: Vec<(&'a str, SqlIndexColumn)>,
-        concurrent: bool,
-        is_unique: bool,
     },
 }

@@ -5,6 +5,8 @@ pub struct SqlIndexColumn {
     pub sort_order: Option<IndexSortOrder>,
     pub null_order: Option<IndexNullOrder>,
     pub method: Option<IndexMethod>,
+    pub is_concurrent: bool,
+    pub is_unique: bool,
 }
 
 #[derive(Clone, Copy)]

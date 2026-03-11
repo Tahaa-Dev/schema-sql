@@ -12,7 +12,20 @@ pub enum Error {
     ParseFailure(String),
     InvalidMethod(String),
     InvalidParam(String),
-    DuplicateIdent(String),
+    DuplicateIdent(String, IdentType),
+    MissingIdent(String, IdentType),
+}
+
+#[derive(PartialEq, Debug, Clone, Copy)]
+pub enum IdentType {
+    Table,
+    Column,
+}
+
+impl std::fmt::Display for IdentType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if *self == Self::Table { "table" } else { "column" })
+    }
 }
 
 impl std::error::Error for Error {}
@@ -35,7 +48,8 @@ impl std::fmt::Display for Error {
             Self::ParseFailure(s) => write!(f, "Failed to parse: {}", s),
             Self::InvalidMethod(s) => write!(f, "Invalid method: {}", s),
             Self::InvalidParam(s) => write!(f, "Invalid parameter: {}", s),
-            Self::DuplicateIdent(s) => write!(f, "Duplicate identifier: {}", s),
+            Self::DuplicateIdent(s, ty) => write!(f, "Duplicate {}: {}", ty, s),
+            Self::MissingIdent(s, ty) => write!(f, "Missing {}: {}", ty, s),
         }
     }
 }
@@ -78,7 +92,7 @@ impl<'a> From<nom::Err<nom::error::Error<&'a str>>> for Error {
                     }
 
                     nom::error::ErrorKind::OneOf => {
-                        Error::DuplicateIdent(input)
+                        Error::DuplicateIdent(input, IdentType::Column)
                     }
 
                     _ => Error::ParseFailure(input),

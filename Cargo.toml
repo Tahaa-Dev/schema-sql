@@ -1,10 +1,9 @@
 [package]
-name = "sqllex"
+name = "serde-sql"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-equivalent = "1.0.2"
+hashbrown = { version = "0.16.1", default-features = false, features = ["default-hasher"] }
 indexmap = "2.13.0"
-memchr = "2.8.0"
 nom = "8.0.0"

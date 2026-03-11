@@ -1,33 +1,76 @@
+use hashbrown::HashMap;
 use indexmap::IndexMap;
-use nom::{
-    Parser, bytes::complete::tag, character::complete::multispace0,
-};
 
 use crate::{
-    Error, Result, SqlColumn, SupportedDBs, lexer::{Created, parse_statement}
+    Error, IdentType, Result, SqlColumn, SupportedDBs,
+    lexer::{Created, parse_statement},
 };
 
-pub type Map = IndexMap<String, SqlColumn>;
+pub type ColMap = IndexMap<String, SqlColumn>;
+pub type TableMap = HashMap<String, SqlTable>;
 
+#[allow(dead_code)]
 pub struct SqlTable {
-    columns: Map,
+    columns: ColMap,
     primary_key: Option<String>,
 }
 
-impl SqlTable {
-    fn from_sql(db: SupportedDBs, statement: &str) -> Result<(&str, (Self, String))> {
-        let (input, created) = parse_statement(db, statement)?;
-        let (input, _) = (multispace0, tag(";"), multispace0).parse(input)?;
+pub struct SqlDB {
+    pub name: Option<String>,
+    pub tables: TableMap,
+    pub db: SupportedDBs,
+}
 
-        Ok((
-            input,
+impl SqlDB {
+    pub fn from_sql(db: SupportedDBs, statements: &str) -> Result<Self> {
+        let mut tables = TableMap::new();
+
+        let mut statements = statements;
+
+        loop {
+            let (remaining, created) = parse_statement(db, statements)?;
+
+            statements = remaining;
+            
+            if statements.is_empty() {
+                break;
+            }
+
             match created {
                 Created::Table { name, columns, primary_key } => {
-                    (Self { columns, primary_key }, name)
+                    if tables.contains_key(&name) {
+                        return Err(Error::DuplicateIdent(
+                            name,
+                            IdentType::Table,
+                        ));
+                    } else {
+                        unsafe {
+                            tables.insert_unique_unchecked(
+                                name,
+                                SqlTable { columns, primary_key },
+                            )
+                        };
+                    }
                 }
 
-                _ => return Err(Error::UnexpectedToken("INDEX".to_string(), "TABLE".to_string())),
-            },
-        ))
+                Created::Index {
+                    table_name,
+                    columns,
+                } => {
+                    let table = tables
+                        .get_mut(table_name)
+                        .ok_or_else(|| Error::MissingIdent(table_name.to_string(), IdentType::Table))?;
+
+                    for (col_name, index) in columns {
+                        table.columns
+                            .get_mut(col_name)
+                            .ok_or_else(|| Error::MissingIdent(col_name.to_string(), IdentType::Column))?
+                            .index = Some(index);
+                    }
+                }
+            }
+        }
+
+        Ok(Self { name: None, tables, db })
     }
 }
