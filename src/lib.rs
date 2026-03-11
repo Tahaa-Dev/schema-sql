@@ -1,5 +1,5 @@
 mod column;
-mod error;
+pub mod error;
 mod lexer;
 mod schema;
 

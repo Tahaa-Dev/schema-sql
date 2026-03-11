@@ -1,4 +1,4 @@
-#[derive(Default)]
+#[derive(Default, Clone, Debug)]
 pub struct SqlIndexColumn {
     pub name: Option<String>,
     pub opclass: Option<String>,
@@ -9,7 +9,7 @@ pub struct SqlIndexColumn {
     pub is_unique: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum IndexMethod {
     BTree { fillfactor: Option<u8> },
 
@@ -101,25 +101,26 @@ impl IndexMethod {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum GistBufMode {
     On,
     Off,
     Auto,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum IndexSortOrder {
     Asc,
     Desc,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum IndexNullOrder {
     NullsFirst,
     NullsLast,
 }
 
+#[derive(Clone, Debug)]
 pub struct SqlColumn {
     pub sql_type: SqlType,
     pub index: Option<SqlIndexColumn>,
@@ -127,6 +128,7 @@ pub struct SqlColumn {
     pub is_primary_key: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SqlType {
     // Numeric
     SmallInt,
@@ -171,6 +173,7 @@ pub enum SqlType {
     BigSerial,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IntervalField {
     Year,
     Month,

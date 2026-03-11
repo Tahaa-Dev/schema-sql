@@ -1,5 +1,6 @@
 use hashbrown::HashMap;
 use indexmap::IndexMap;
+use nom::{Parser, bytes::complete::tag, character::complete::multispace0};
 
 use crate::{
     Error, IdentType, Result, SqlColumn, SupportedDBs,
@@ -11,8 +12,8 @@ pub type TableMap = HashMap<String, SqlTable>;
 
 #[allow(dead_code)]
 pub struct SqlTable {
-    columns: ColMap,
-    primary_key: Option<String>,
+    pub columns: ColMap,
+    pub primary_key: Option<String>,
 }
 
 pub struct SqlDB {
@@ -29,6 +30,8 @@ impl SqlDB {
 
         loop {
             let (remaining, created) = parse_statement(db, statements)?;
+            let (remaining, _) =
+                (multispace0, tag(";"), multispace0).parse(remaining)?;
 
             statements = remaining;
 
@@ -49,23 +52,29 @@ impl SqlDB {
                     }
                 }
 
-                Created::Index {
-                    table_name,
-                    columns,
-                } => {
-                    let table = tables
-                        .get_mut(table_name)
-                        .ok_or_else(|| Error::MissingIdent(table_name.to_string(), IdentType::Table))?;
+                Created::Index { table_name, columns } => {
+                    let table =
+                        tables.get_mut(table_name).ok_or_else(|| {
+                            Error::MissingIdent(
+                                table_name.to_string(),
+                                IdentType::Table,
+                            )
+                        })?;
 
                     for (col_name, index) in columns {
-                        table.columns
+                        table
+                            .columns
                             .get_mut(col_name)
-                            .ok_or_else(|| Error::MissingIdent(col_name.to_string(), IdentType::Column))?
+                            .ok_or_else(|| {
+                                Error::MissingIdent(
+                                    col_name.to_string(),
+                                    IdentType::Column,
+                                )
+                            })?
                             .index = Some(index);
                     }
                 }
             }
-
 
             if statements.is_empty() {
                 break;

@@ -8,9 +8,9 @@ use crate::{
 use nom::{
     IResult, Parser,
     branch::alt,
-    bytes::complete::{tag, tag_no_case},
+    bytes::complete::{is_not, tag, tag_no_case},
     character::complete::{alphanumeric1, digit1, multispace0, multispace1},
-    combinator::{map_res, opt, recognize, value},
+    combinator::{map_res, not, opt, recognize, value},
     multi::{many0, many1, separated_list1},
     sequence::{delimited, preceded, separated_pair, terminated},
 };
@@ -109,6 +109,24 @@ pub(crate) fn parse_statement(
                     // Binary
                     "BYTEA" => SqlType::ByteA,
 
+                    // Boolean
+                    "BOOLEAN" | "BOOL" => SqlType::Boolean,
+
+                    // Network
+                    "INET" => SqlType::Inet,
+                    "CIDR" => SqlType::Cidr,
+                    "MACADDR" => SqlType::MacAddr,
+
+                    // Semi-Structured
+                    "JSON" => SqlType::Json,
+                    "JSONB" => SqlType::Jsonb,
+                    "UUID" => SqlType::Uuid,
+
+                    // Serial
+                    "SMALLSERIAL" | "SERIAL2" => SqlType::SmallSerial,
+                    "SERIAL" | "SERIAL4" => SqlType::Serial,
+                    "BIGSERIAL" | "SERIAL8" => SqlType::BigSerial,
+
                     // Date/Time
                     "TIMESTAMP" | "TIMESTAMP WITHOUT TIME ZONE" => {
                         SqlType::Timestamp(args.first().copied())
@@ -152,24 +170,6 @@ pub(crate) fn parse_statement(
                         precision: args.first().copied(),
                     },
 
-                    // Boolean
-                    "BOOLEAN" | "BOOL" => SqlType::Boolean,
-
-                    // Network
-                    "INET" => SqlType::Inet,
-                    "CIDR" => SqlType::Cidr,
-                    "MACADDR" => SqlType::MacAddr,
-
-                    // Semi-Structured
-                    "JSON" => SqlType::Json,
-                    "JSONB" => SqlType::Jsonb,
-                    "UUID" => SqlType::Uuid,
-
-                    // Serial
-                    "SMALLSERIAL" | "SERIAL2" => SqlType::SmallSerial,
-                    "SERIAL" | "SERIAL4" => SqlType::Serial,
-                    "BIGSERIAL" | "SERIAL8" => SqlType::BigSerial,
-
                     _ => {
                         return Err(nom::Err::Failure(nom::error::Error::new(
                             input,
@@ -184,7 +184,7 @@ pub(crate) fn parse_statement(
                         tag_no_case("PRIMARY KEY"),
                         tag_no_case("UNIQUE"),
                         tag_no_case("NOT NULL"),
-                        recognize(many1(alt((multispace0, alphanumeric1)))),
+                        recognize(many0(alt((multispace0, alphanumeric1)))),
                     ))),
                 ))
                 .parse(input)?;
@@ -272,7 +272,7 @@ pub(crate) fn parse_statement(
         }
 
         _ => {
-            let is_unique = &output[..6] == "UNIQUE";
+            let is_unique = output.contains("UNIQUE");
 
             let (input, _) = multispace1(input)?;
 
@@ -280,8 +280,6 @@ pub(crate) fn parse_statement(
                 opt(terminated(tag_no_case("CONCURRENTLY"), multispace1))
                     .parse(input)?;
             let is_concurrent = concurrent.is_some();
-
-            let (input, _) = multispace1(input)?;
 
             let (input, _) = opt((
                 tag_no_case("IF"),
@@ -293,12 +291,17 @@ pub(crate) fn parse_statement(
             ))
             .parse(input)?;
 
-            let (input, index_name) =
-                opt(terminated(parse_ident, multispace1)).parse(input)?;
-
-            let (input, table_name) =
-                preceded((tag_no_case("ON"), multispace1), parse_ident)
-                    .parse(input)?;
+            let (input, (index_name, table_name)): (&str, (Option<&str>, &str)) = alt((
+                (
+                    opt(terminated(parse_ident, multispace1)),
+                    preceded((tag_no_case("ON"), multispace1), parse_ident),
+                ),
+                (
+                    opt(recognize(not(is_not("")))),
+                    preceded((tag_no_case("ON"), multispace1), parse_ident),
+                ),
+            ))
+            .parse(input)?;
 
             let (input, _) = multispace1(input)?;
 
@@ -412,10 +415,8 @@ pub(crate) fn parse_statement(
             )
             .parse(input)?;
 
-            let (input, _) = multispace1(input)?;
-
             let (input, pairs) = opt(preceded(
-                (tag_no_case("WITH"), multispace1),
+                (multispace1, tag_no_case("WITH"), multispace1),
                 delimited(
                     tag("("),
                     separated_list1(
@@ -524,13 +525,7 @@ pub(crate) fn parse_statement(
                 res.map_err(|_| Error::InvalidParam(key.into()))?;
             }
 
-            Ok((
-                input,
-                Created::Index {
-                    table_name,
-                    columns: cols,
-                },
-            ))
+            Ok((input, Created::Index { table_name, columns: cols }))
         }
     }
 }
@@ -546,14 +541,7 @@ fn parse_ident(input: &str) -> IResult<&str, &str> {
 }
 
 pub(crate) enum Created<'a> {
-    Table {
-        name: String,
-        columns: ColMap,
-        primary_key: Option<String>,
-    },
+    Table { name: String, columns: ColMap, primary_key: Option<String> },
 
-    Index {
-        table_name: &'a str,
-        columns: Vec<(&'a str, SqlIndexColumn)>,
-    },
+    Index { table_name: &'a str, columns: Vec<(&'a str, SqlIndexColumn)> },
 }
