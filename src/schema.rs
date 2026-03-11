@@ -31,10 +31,6 @@ impl SqlDB {
             let (remaining, created) = parse_statement(db, statements)?;
 
             statements = remaining;
-            
-            if statements.is_empty() {
-                break;
-            }
 
             match created {
                 Created::Table { name, columns, primary_key } => {
@@ -68,6 +64,11 @@ impl SqlDB {
                             .index = Some(index);
                     }
                 }
+            }
+
+
+            if statements.is_empty() {
+                break;
             }
         }
 
