@@ -1,10 +1,10 @@
 use hashbrown::HashMap;
 use indexmap::IndexMap;
-use nom::{Parser, bytes::complete::tag, character::complete::multispace0};
+use nom::{Parser, bytes::complete::tag};
 
 use crate::{
     Error, IdentType, Result, SqlColumn, SupportedDBs,
-    lexer::{Created, parse_statement},
+    lexer::{Created, parse_comment0, parse_statement},
 };
 
 pub type ColMap = IndexMap<String, SqlColumn>;
@@ -29,9 +29,21 @@ impl SqlDB {
         let mut statements = statements;
 
         loop {
+            loop {
+                let (remaining, _) = parse_comment0(statements)?;
+                statements = remaining;
+                if !statements.starts_with("--") {
+                    break;
+                }
+            }
+
+            if statements.is_empty() {
+                break;
+            }
+
             let (remaining, created) = parse_statement(db, statements)?;
             let (remaining, _) =
-                (multispace0, tag(";"), multispace0).parse(remaining)?;
+                (parse_comment0, tag(";"), parse_comment0).parse(remaining)?;
 
             statements = remaining;
 
@@ -82,5 +94,37 @@ impl SqlDB {
         }
 
         Ok(Self { name: None, tables, db })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{SqlDB, SupportedDBs};
+
+    #[test]
+    fn test_comment_parsing() {
+        let sql = r#"
+        -- Comment
+
+        -- Another one
+        CREATE TABLE users (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Some notes on id
+            name TEXT
+        ); -- One last comment"#;
+
+        let db = SqlDB::from_sql(SupportedDBs::PostgreSQL, sql).unwrap();
+
+        assert!(db.tables.contains_key("users"));
+        assert!(
+            db.tables.get("users").as_ref().unwrap().columns.contains_key("id")
+        );
+        assert!(
+            db.tables
+                .get("users")
+                .as_ref()
+                .unwrap()
+                .columns
+                .contains_key("name")
+        );
     }
 }

@@ -3,7 +3,7 @@ use serde_sql::{IndexMethod, SqlDB, SqlType, SupportedDBs, error::Error};
 #[test]
 fn test_valid() -> Result<(), Error> {
     let sql = r#"
-        CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), name TEXT, email TEXT);
+        CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), name TEXT, email TEXT); -- A note
         CREATE INDEX ON users USING hash (id);"#;
 
     let db = SqlDB::from_sql(SupportedDBs::PostgreSQL, sql)?;

@@ -9,7 +9,9 @@ use nom::{
     IResult, Parser,
     branch::alt,
     bytes::complete::{is_not, tag, tag_no_case},
-    character::complete::{alphanumeric1, digit1, multispace0, multispace1},
+    character::complete::{
+        alphanumeric1, digit1, multispace0, multispace1, none_of,
+    },
     combinator::{map_res, not, opt, recognize, value},
     multi::{many0, many1, separated_list1},
     sequence::{delimited, preceded, separated_pair, terminated},
@@ -19,11 +21,11 @@ pub(crate) fn parse_statement(
     _db: SupportedDBs,
     input: &str,
 ) -> Result<(&str, Created<'_>)> {
-    let (input, _) = multispace0(input)?;
+    let (input, _) = parse_comment0(input)?;
 
     let (input, _) = tag_no_case("CREATE")(input)?;
 
-    let (input, _) = multispace1(input)?;
+    let (input, _) = parse_comment1(input)?;
 
     let (input, output) = alt((
         tag_no_case("TABLE"),
@@ -41,7 +43,7 @@ pub(crate) fn parse_statement(
 
             let parse_col_def = |input| {
                 let (input, col_name) = parse_ident(input)?;
-                let (input, _) = multispace1(input)?;
+                let (input, _) = parse_comment1(input)?;
 
                 let (input, sql_type) = alt((
                     tag_no_case("DOUBLE PRECISION"),
@@ -65,20 +67,20 @@ pub(crate) fn parse_statement(
                 ))
                 .parse(input)?;
 
-                let (input, args) = opt((
-                    multispace0,
+                let (input, args) = opt(preceded(
+                    parse_comment0,
                     delimited(
-                        tag("("),
+                        (tag("("), parse_comment0),
                         separated_list1(
-                            (multispace0, tag(","), multispace0),
+                            (parse_comment0, tag(","), parse_comment0),
                             map_res(digit1, |s: &str| s.parse::<usize>()),
                         ),
-                        tag(")"),
+                        (parse_comment0, tag(")")),
                     ),
                 ))
                 .parse(input)?;
 
-                let (_, args) = args.unwrap_or(("", Vec::new()));
+                let args = args.unwrap_or(Vec::new());
 
                 let ty = sql_type.to_uppercase();
                 let sql_type = match ty.as_str() {
@@ -179,12 +181,20 @@ pub(crate) fn parse_statement(
                 };
 
                 let (input, pk) = opt(many0(preceded(
-                    multispace1,
+                    parse_comment1,
                     alt((
                         tag_no_case("PRIMARY KEY"),
                         tag_no_case("UNIQUE"),
                         tag_no_case("NOT NULL"),
-                        is_not(","),
+                        recognize(many0(alt((
+                            alphanumeric1,
+                            multispace1,
+                            tag("_"),
+                            tag("()"),
+                            delimited(tag("("), is_not(")"), tag(")")),
+                            delimited(tag("'"), is_not("'"), tag("'")),
+                            delimited(tag("\""), is_not("\""), tag("\"")),
+                        )))),
                     )),
                 )))
                 .parse(input)?;
@@ -236,28 +246,28 @@ pub(crate) fn parse_statement(
                 Ok((input, ()))
             };
 
-            let (input, _) = multispace1(input)?;
+            let (input, _) = parse_comment1(input)?;
 
             let (input, _) = opt((
                 tag_no_case("IF"),
-                multispace1,
+                parse_comment1,
                 tag_no_case("NOT"),
-                multispace1,
+                parse_comment1,
                 tag_no_case("EXISTS"),
-                multispace1,
+                parse_comment1,
             ))
             .parse(input)?;
 
             let (input, table_name) = parse_ident(input)?;
-            let (input, _) = multispace0(input)?;
+            let (input, _) = parse_comment0(input)?;
 
             let (input, _) = delimited(
-                tag("("),
+                (tag("("), parse_comment0),
                 separated_list1(
-                    (multispace0, tag(","), multispace0),
+                    (parse_comment0, tag(","), parse_comment0),
                     parse_col_def,
                 ),
-                tag(")"),
+                (parse_comment0, tag(")")),
             )
             .parse(input)?;
 
@@ -274,20 +284,20 @@ pub(crate) fn parse_statement(
         _ => {
             let is_unique = output.contains("UNIQUE");
 
-            let (input, _) = multispace1(input)?;
+            let (input, _) = parse_comment1(input)?;
 
             let (input, concurrent) =
-                opt(terminated(tag_no_case("CONCURRENTLY"), multispace1))
+                opt(terminated(tag_no_case("CONCURRENTLY"), parse_comment1))
                     .parse(input)?;
             let is_concurrent = concurrent.is_some();
 
             let (input, _) = opt((
                 tag_no_case("IF"),
-                multispace1,
+                parse_comment1,
                 tag_no_case("NOT"),
-                multispace1,
+                parse_comment1,
                 tag_no_case("EXISTS"),
-                multispace1,
+                parse_comment1,
             ))
             .parse(input)?;
 
@@ -296,20 +306,20 @@ pub(crate) fn parse_statement(
                 (Option<&str>, &str),
             ) = alt((
                 (
-                    opt(terminated(parse_ident, multispace1)),
-                    preceded((tag_no_case("ON"), multispace1), parse_ident),
+                    opt(terminated(parse_ident, parse_comment1)),
+                    preceded((tag_no_case("ON"), parse_comment1), parse_ident),
                 ),
                 (
                     opt(recognize(not(is_not("")))),
-                    preceded((tag_no_case("ON"), multispace1), parse_ident),
+                    preceded((tag_no_case("ON"), parse_comment1), parse_ident),
                 ),
             ))
             .parse(input)?;
 
-            let (input, _) = multispace1(input)?;
+            let (input, _) = parse_comment1(input)?;
 
             let (input, idx_method) = opt(preceded(
-                (tag_no_case("USING"), multispace1),
+                (tag_no_case("USING"), parse_comment1),
                 alphanumeric1,
             ))
             .parse(input)?;
@@ -339,29 +349,29 @@ pub(crate) fn parse_statement(
                 ));
             }
 
-            let (input, _) = multispace1(input)?;
+            let (input, _) = parse_comment1(input)?;
 
             let (input, cols) = delimited(
                 tag("("),
                 separated_list1(
-                    (multispace0, tag(","), multispace0),
+                    (parse_comment0, tag(","), parse_comment0),
                     map_res(
                         (
                             alt((
                                 recognize((
                                     alphanumeric1,
-                                    multispace0,
+                                    parse_comment0,
                                     tag("("),
-                                    multispace0,
+                                    parse_comment0,
                                     parse_ident,
-                                    multispace0,
+                                    parse_comment0,
                                     tag(")"),
                                 )),
                                 parse_ident,
                             )),
-                            opt(preceded(multispace1, parse_ident)),
+                            opt(preceded(parse_comment1, parse_ident)),
                             opt(preceded(
-                                multispace1,
+                                parse_comment1,
                                 alt((
                                     value(
                                         IndexSortOrder::Asc,
@@ -374,13 +384,13 @@ pub(crate) fn parse_statement(
                                 )),
                             )),
                             opt(preceded(
-                                multispace1,
+                                parse_comment1,
                                 alt((
                                     value(
                                         IndexNullOrder::NullsFirst,
                                         (
                                             tag_no_case("NULLS"),
-                                            multispace1,
+                                            parse_comment1,
                                             tag_no_case("FIRST"),
                                         ),
                                     ),
@@ -388,7 +398,7 @@ pub(crate) fn parse_statement(
                                         IndexNullOrder::NullsLast,
                                         (
                                             tag_no_case("NULLS"),
-                                            multispace1,
+                                            parse_comment1,
                                             tag_no_case("LAST"),
                                         ),
                                     ),
@@ -419,14 +429,14 @@ pub(crate) fn parse_statement(
             .parse(input)?;
 
             let (input, pairs) = opt(preceded(
-                (multispace1, tag_no_case("WITH"), multispace1),
+                (parse_comment1, tag_no_case("WITH"), parse_comment1),
                 delimited(
                     tag("("),
                     separated_list1(
-                        (multispace0, tag(","), multispace0),
+                        (parse_comment0, tag(","), parse_comment0),
                         separated_pair(
                             parse_ident,
-                            (multispace0, tag("="), multispace0),
+                            (parse_comment0, tag("="), parse_comment0),
                             alphanumeric1,
                         ),
                     ),
@@ -543,6 +553,21 @@ fn parse_ident(input: &str) -> IResult<&str, &str> {
     .parse(input)
 }
 
+pub(crate) fn parse_comment0(input: &str) -> IResult<&str, ()> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) =
+        opt((tag("--"), many0(none_of("\r\n")), multispace0)).parse(input)?;
+
+    Ok((input, ()))
+}
+
+pub(crate) fn parse_comment1(input: &str) -> IResult<&str, ()> {
+    let (input, _) = multispace1(input)?;
+    opt((tag("--"), many0(none_of("\r\n")), multispace1))
+        .parse(input)
+        .map(|(s, _)| (s, ()))
+}
+
 pub(crate) enum Created<'a> {
     Table { name: String, columns: ColMap, primary_key: Option<String> },
 
@@ -557,13 +582,18 @@ mod tests {
     fn lexer_valid() {
         let (s, _) = parse_statement(
             SupportedDBs::PostgreSQL,
-            r#"CREATE table IF NOT EXISTS users (id UUID primary key)"#,
+            r#"CREATE table IF NOT EXISTS -- Make sure it's only created once
+            users (
+                id UUID primary key, -- Primary key Notes
+                name TEXT
+            )"#,
         )
         .unwrap();
 
         let (s2, _) = parse_statement(
             SupportedDBs::PostgreSQL,
-            r#"CREATE InDex IF NOT EXISTS user_id ON users USING BRIN (id)"#,
+            r#"CREATE InDex -- Note
+            IF NOT EXISTS user_id ON users USING BRIN (id)"#,
         )
         .unwrap();
 
