@@ -4,7 +4,7 @@ use nom::{Parser, bytes::complete::tag};
 
 use crate::{
     Error, IdentType, Result, SqlColumn, SupportedDBs,
-    lexer::{Created, parse_comment0, parse_statement},
+    lexer::{Created, Lexer, parse_comment0},
 };
 
 pub type ColMap = IndexMap<String, SqlColumn>;
@@ -17,7 +17,6 @@ pub struct SqlTable {
 }
 
 pub struct SqlDB {
-    pub name: Option<String>,
     pub tables: TableMap,
     pub db: SupportedDBs,
 }
@@ -26,26 +25,23 @@ impl SqlDB {
     pub fn from_sql(db: SupportedDBs, statements: &str) -> Result<Self> {
         let mut tables = TableMap::new();
 
-        let mut statements = statements;
+        let mut lexer = Lexer { db, statements };
 
         loop {
             loop {
-                let (remaining, _) = parse_comment0(statements)?;
-                statements = remaining;
-                if !statements.starts_with("--") {
+                lexer.custom_parser(parse_comment0)?;
+                if !lexer.statements.starts_with("/*")
+                    && !lexer.statements.starts_with("--")
+                {
                     break;
                 }
             }
 
-            if statements.is_empty() {
+            if lexer.statements.is_empty() {
                 break;
             }
 
-            let (remaining, created) = parse_statement(db, statements)?;
-            let (remaining, _) =
-                (parse_comment0, tag(";"), parse_comment0).parse(remaining)?;
-
-            statements = remaining;
+            let created = lexer.parse_statement()?;
 
             match created {
                 Created::Table { name, columns, primary_key } => {
@@ -88,12 +84,16 @@ impl SqlDB {
                 }
             }
 
-            if statements.is_empty() {
+            lexer.custom_parser(|remaining| {
+                (parse_comment0, tag(";"), parse_comment0).parse(remaining)
+            })?;
+
+            if lexer.statements.is_empty() {
                 break;
             }
         }
 
-        Ok(Self { name: None, tables, db })
+        Ok(Self { tables, db })
     }
 }
 
