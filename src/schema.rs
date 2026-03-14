@@ -29,7 +29,7 @@ impl SqlDB {
 
         loop {
             loop {
-                lexer.custom_parser(parse_comment0)?;
+                lexer.parser(parse_comment0)?;
                 if !lexer.statements.starts_with("/*")
                     && !lexer.statements.starts_with("--")
                 {
@@ -84,7 +84,7 @@ impl SqlDB {
                 }
             }
 
-            lexer.custom_parser(|remaining| {
+            lexer.parser(|remaining| {
                 (parse_comment0, tag(";"), parse_comment0).parse(remaining)
             })?;
 

@@ -25,20 +25,19 @@ pub(crate) struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     pub(crate) fn parse_statement(&mut self) -> Result<Created<'_>> {
-        let (input, _) = parse_comment0(self.statements)?;
+        self.parser(parse_comment0)?;
 
-        let (input, _) = tag_no_case("CREATE")(input)?;
+        self.parser(tag_no_case("CREATE"))?;
 
-        let (input, _) = parse_comment1(input)?;
+        self.parser(parse_comment1)?;
 
-        let (input, output) = alt((
+        let output = self.parser(alt((
             tag_no_case("TABLE"),
             recognize((
                 opt((tag_no_case("UNIQUE"), parse_comment1)),
                 tag_no_case("INDEX"),
             )),
-        ))
-        .parse(input)?;
+        )))?;
 
         let output = output.to_uppercase();
 
@@ -264,32 +263,28 @@ impl<'a> Lexer<'a> {
                     Ok((input, ()))
                 };
 
-                let (input, _) = parse_comment1(input)?;
+                self.parser(parse_comment1)?;
 
-                let (input, _) = opt((
+                self.parser(opt((
                     tag_no_case("IF"),
                     parse_comment1,
                     tag_no_case("NOT"),
                     parse_comment1,
                     tag_no_case("EXISTS"),
                     parse_comment1,
-                ))
-                .parse(input)?;
+                )))?;
 
-                let (input, table_name) = parse_ident(input)?;
-                let (input, _) = parse_comment0(input)?;
+                let table_name = self.parser(parse_ident)?;
+                self.parser(parse_comment0)?;
 
-                let (input, _) = delimited(
+                self.parser(delimited(
                     (tag("("), parse_comment0),
                     separated_list1(
                         (parse_comment0, tag(","), parse_comment0),
                         parse_col_def,
                     ),
                     (parse_comment0, tag(")")),
-                )
-                .parse(input)?;
-
-                self.statements = input;
+                ))?;
 
                 Ok(Created::Table {
                     name: table_name.to_string(),
@@ -301,53 +296,48 @@ impl<'a> Lexer<'a> {
             _ => {
                 let is_unique = output.starts_with("UNIQUE");
 
-                let (input, _) = parse_comment1(input)?;
+                self.parser(parse_comment1)?;
 
-                let (input, concurrent) = opt(terminated(
+                let concurrent = self.parser(opt(terminated(
                     tag_no_case("CONCURRENTLY"),
                     parse_comment1,
-                ))
-                .parse(input)?;
+                )))?;
+
                 let is_concurrent = concurrent.is_some();
 
-                let (input, _) = opt((
+                self.parser(opt((
                     tag_no_case("IF"),
                     parse_comment1,
                     tag_no_case("NOT"),
                     parse_comment1,
                     tag_no_case("EXISTS"),
                     parse_comment1,
-                ))
-                .parse(input)?;
+                )))?;
 
-                let (input, (index_name, table_name)): (
-                    &str,
-                    (Option<&str>, &str),
-                ) = alt((
-                    (
-                        opt(terminated(parse_ident, parse_comment1)),
-                        preceded(
-                            (tag_no_case("ON"), parse_comment1),
-                            parse_ident,
+                let (index_name, table_name): (Option<&str>, &str) = self
+                    .parser(alt((
+                        (
+                            opt(terminated(parse_ident, parse_comment1)),
+                            preceded(
+                                (tag_no_case("ON"), parse_comment1),
+                                parse_ident,
+                            ),
                         ),
-                    ),
-                    (
-                        opt(recognize(not(is_not("")))),
-                        preceded(
-                            (tag_no_case("ON"), parse_comment1),
-                            parse_ident,
+                        (
+                            opt(recognize(not(is_not("")))),
+                            preceded(
+                                (tag_no_case("ON"), parse_comment1),
+                                parse_ident,
+                            ),
                         ),
-                    ),
-                ))
-                .parse(input)?;
+                    )))?;
 
-                let (input, _) = parse_comment1(input)?;
+                self.parser(parse_comment1)?;
 
-                let (input, idx_method) = opt(preceded(
+                let idx_method = self.parser(opt(preceded(
                     (tag_no_case("USING"), parse_comment1),
                     alphanumeric1,
-                ))
-                .parse(input)?;
+                )))?;
 
                 let mut index_method =
                     idx_method.map(|s: &str| match s.to_uppercase().as_str() {
@@ -375,9 +365,9 @@ impl<'a> Lexer<'a> {
                     ));
                 }
 
-                let (input, _) = parse_comment1(input)?;
+                self.parser(parse_comment1)?;
 
-                let (input, cols) = delimited(
+                let cols = self.parser(delimited(
                     (tag("("), parse_comment0),
                     separated_list1(
                         (parse_comment0, tag(","), parse_comment0),
@@ -451,10 +441,9 @@ impl<'a> Lexer<'a> {
                         ),
                     ),
                     (parse_comment0, tag(")")),
-                )
-                .parse(input)?;
+                ))?;
 
-                let (input, pairs) = opt(preceded(
+                let pairs = self.parser(opt(preceded(
                     (parse_comment1, tag_no_case("WITH"), parse_comment1),
                     delimited(
                         (tag("("), parse_comment0),
@@ -468,12 +457,11 @@ impl<'a> Lexer<'a> {
                         ),
                         (parse_comment0, tag(")")),
                     ),
-                ))
-                .parse(input)?;
+                )))?;
 
                 if pairs.is_some() {
                     idx_method.ok_or(Error::UnexpectedToken(
-                        input.into(),
+                        self.statements.into(),
                         "Index Method".into(),
                     ))?;
                 }
@@ -569,18 +557,20 @@ impl<'a> Lexer<'a> {
 
                     res.map_err(|_| Error::InvalidParam(key.into()))?;
                 }
-                self.statements = input;
 
                 Ok(Created::Index { table_name, columns: cols })
             }
         }
     }
 
-    pub(crate) fn custom_parser<T, F: FnOnce(&'a str) -> IResult<&str, T>>(
+    pub(crate) fn parser<
+        T,
+        F: Parser<&'a str, Output = T, Error = nom::error::Error<&'a str>>,
+    >(
         &mut self,
-        parser: F,
+        mut parser: F,
     ) -> Result<T> {
-        let (input, out) = parser(self.statements)?;
+        let (input, out) = parser.parse(self.statements)?;
 
         self.statements = input;
 
@@ -601,6 +591,9 @@ fn parse_ident(input: &str) -> IResult<&str, &str> {
 pub(crate) fn parse_comment0(input: &str) -> IResult<&str, ()> {
     let (input, _) = multispace0(input)?;
     let (input, _) = opt(alt((
+        // many0(none_of("\r\n")) instead of is_not("\r\n") is because is_not fails if the pattern
+        // is not found while many0(none_of) doesn't which is needed since the comment could be at
+        // EOF where is_not wouldn't find \n or \r and it would fail
         value((), (tag("--"), many0(none_of("\r\n")), multispace0)),
         value((), (tag("/*"), take_until("*/"), tag("*/"), multispace0)),
     )))
