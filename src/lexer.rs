@@ -217,6 +217,66 @@ impl<'a> Lexer<'a> {
         })
     }
 
+    fn pg_parse_type(input: &str) -> IResult<&str, (&str, Option<Vec<usize>>)> {
+        let (input, sql_type) = alt((
+            tag_no_case("DOUBLE PRECISION"),
+            tag_no_case("TIMESTAMP WITH TIME ZONE"),
+            tag_no_case("TIMESTAMP WITHOUT TIME ZONE"),
+            tag_no_case("CHARACTER VARYING"),
+            tag_no_case("INTERVAL YEAR"),
+            tag_no_case("INTERVAL MONTH"),
+            tag_no_case("INTERVAL DAY"),
+            tag_no_case("INTERVAL HOUR"),
+            tag_no_case("INTERVAL MINUTE"),
+            tag_no_case("INTERVAL SECOND"),
+            tag_no_case("INTERVAL YEAR TO MONTH"),
+            tag_no_case("INTERVAL DAY TO HOUR"),
+            tag_no_case("INTERVAL DAY TO MINUTE"),
+            tag_no_case("INTERVAL DAY TO SECOND"),
+            tag_no_case("INTERVAL HOUR TO MINUTE"),
+            tag_no_case("INTERVAL HOUR TO SECOND"),
+            tag_no_case("INTERVAL MINUTE TO SECOND"),
+            alphanumeric1,
+        ))
+        .parse(input)?;
+
+        let (input, args) = opt(preceded(
+            parse_comment0,
+            delimited(
+                (tag("("), parse_comment0),
+                separated_list1(
+                    (parse_comment0, tag(","), parse_comment0),
+                    map_res(digit1, |s: &str| s.parse::<usize>()),
+                ),
+                (parse_comment0, tag(")")),
+            ),
+        ))
+        .parse(input)?;
+
+        Ok((input, (sql_type, args)))
+    }
+
+    fn pg_parse_constraints(input: &str) -> IResult<&str, Option<Vec<&str>>> {
+        opt(many0(preceded(
+            parse_comment1,
+            alt((
+                tag_no_case("PRIMARY KEY"),
+                tag_no_case("UNIQUE"),
+                tag_no_case("NOT NULL"),
+                recognize(many0(alt((
+                    alphanumeric1,
+                    multispace1,
+                    tag("_"),
+                    tag("()"),
+                    delimited(tag("("), is_not(")"), tag(")")),
+                    delimited(tag("'"), is_not("'"), tag("'")),
+                    delimited(tag("\""), is_not("\""), tag("\"")),
+                )))),
+            )),
+        )))
+        .parse(input)
+    }
+
     fn pg_parse_index(&mut self, is_unique: bool) -> Result<Created<'_>> {
         self.parser(parse_comment1)?;
 
@@ -319,6 +379,7 @@ impl<'a> Lexer<'a> {
                                 is_concurrent,
                                 is_unique,
                                 included_cols: None,
+                                predicate: None,
                             },
                         ))
                     },
@@ -328,9 +389,12 @@ impl<'a> Lexer<'a> {
         ))?;
 
         let included = self.pg_parse_include()?;
+
         self.pg_apply_with_params(&mut index_method, idx_method)?;
 
-        Ok(Created::Index { table_name, columns: cols, included })
+        let predicate = self.pg_parse_where()?;
+
+        Ok(Created::Index { table_name, columns: cols, included, predicate })
     }
 
     fn pg_parse_index_method(
@@ -367,6 +431,24 @@ impl<'a> Lexer<'a> {
         }
 
         Ok((idx_method, index_method))
+    }
+
+    fn pg_parse_include(&mut self) -> Result<Option<Vec<String>>> {
+        self.parser(opt(preceded(
+            (parse_comment1, tag_no_case("INCLUDE"), parse_comment0),
+            delimited(
+                (tag("("), parse_comment0),
+                separated_list1(
+                    (parse_comment0, tag(","), parse_comment0),
+                    map_res(parse_ident, |s: &'a str| {
+                        Ok::<String, nom::Err<nom::error::Error<&str>>>(
+                            s.to_string(),
+                        )
+                    }),
+                ),
+                (parse_comment0, tag(")")),
+            ),
+        )))
     }
 
     fn pg_apply_with_params(
@@ -479,82 +561,33 @@ impl<'a> Lexer<'a> {
         Ok(())
     }
 
-    fn pg_parse_include(&mut self) -> Result<Option<Vec<String>>> {
-        self.parser(opt(preceded(
-            (parse_comment1, tag_no_case("INCLUDE"), parse_comment0),
-            delimited(
-                (tag("("), parse_comment0),
-                separated_list1(
-                    (parse_comment0, tag(","), parse_comment0),
-                    map_res(parse_ident, |s: &'a str| {
-                        Ok::<String, nom::Err<nom::error::Error<&str>>>(
-                            s.to_string(),
-                        )
-                    }),
-                ),
-                (parse_comment0, tag(")")),
-            ),
-        )))
-    }
+    fn pg_parse_where(&mut self) -> Result<Option<String>> {
+        let out = self.parser(opt(preceded(
+            (parse_comment1, tag_no_case("WHERE"), parse_comment1),
+            recognize(many1(alt((
+                recognize(delimited(
+                    tag("'"),
+                    many0(alt((
+                        tag("\\'"),
+                        tag("''"),
+                        recognize(none_of("'")),
+                    ))),
+                    tag("'"),
+                )),
+                recognize(delimited(
+                    tag("\""),
+                    many0(alt((
+                        tag("\\\""),
+                        tag("\"\""),
+                        recognize(none_of("\"")),
+                    ))),
+                    tag("\""),
+                )),
+                is_not(";'\""),
+            )))),
+        )))?;
 
-    fn pg_parse_constraints(input: &str) -> IResult<&str, Option<Vec<&str>>> {
-        opt(many0(preceded(
-            parse_comment1,
-            alt((
-                tag_no_case("PRIMARY KEY"),
-                tag_no_case("UNIQUE"),
-                tag_no_case("NOT NULL"),
-                recognize(many0(alt((
-                    alphanumeric1,
-                    multispace1,
-                    tag("_"),
-                    tag("()"),
-                    delimited(tag("("), is_not(")"), tag(")")),
-                    delimited(tag("'"), is_not("'"), tag("'")),
-                    delimited(tag("\""), is_not("\""), tag("\"")),
-                )))),
-            )),
-        )))
-        .parse(input)
-    }
-
-    fn pg_parse_type(input: &str) -> IResult<&str, (&str, Option<Vec<usize>>)> {
-        let (input, sql_type) = alt((
-            tag_no_case("DOUBLE PRECISION"),
-            tag_no_case("TIMESTAMP WITH TIME ZONE"),
-            tag_no_case("TIMESTAMP WITHOUT TIME ZONE"),
-            tag_no_case("CHARACTER VARYING"),
-            tag_no_case("INTERVAL YEAR"),
-            tag_no_case("INTERVAL MONTH"),
-            tag_no_case("INTERVAL DAY"),
-            tag_no_case("INTERVAL HOUR"),
-            tag_no_case("INTERVAL MINUTE"),
-            tag_no_case("INTERVAL SECOND"),
-            tag_no_case("INTERVAL YEAR TO MONTH"),
-            tag_no_case("INTERVAL DAY TO HOUR"),
-            tag_no_case("INTERVAL DAY TO MINUTE"),
-            tag_no_case("INTERVAL DAY TO SECOND"),
-            tag_no_case("INTERVAL HOUR TO MINUTE"),
-            tag_no_case("INTERVAL HOUR TO SECOND"),
-            tag_no_case("INTERVAL MINUTE TO SECOND"),
-            alphanumeric1,
-        ))
-        .parse(input)?;
-
-        let (input, args) = opt(preceded(
-            parse_comment0,
-            delimited(
-                (tag("("), parse_comment0),
-                separated_list1(
-                    (parse_comment0, tag(","), parse_comment0),
-                    map_res(digit1, |s: &str| s.parse::<usize>()),
-                ),
-                (parse_comment0, tag(")")),
-            ),
-        ))
-        .parse(input)?;
-
-        Ok((input, (sql_type, args)))
+        Ok(out.map(|s| s.trim().to_string()))
     }
 
     pub(crate) fn parser<
@@ -620,6 +653,7 @@ pub(crate) enum Created<'a> {
         table_name: &'a str,
         columns: Vec<(&'a str, SqlIndexColumn)>,
         included: Option<Vec<String>>,
+        predicate: Option<String>,
     },
 }
 

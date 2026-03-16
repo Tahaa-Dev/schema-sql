@@ -60,7 +60,7 @@ impl SqlDB {
                     }
                 }
 
-                Created::Index { table_name, columns, included } => {
+                Created::Index { table_name, columns, included, predicate } => {
                     let table =
                         tables.get_mut(table_name).ok_or_else(|| {
                             Error::MissingIdent(
@@ -82,6 +82,7 @@ impl SqlDB {
 
                     for (col_name, mut index) in columns {
                         index.included_cols = included.clone();
+                        index.predicate = predicate.clone();
 
                         table
                             .columns

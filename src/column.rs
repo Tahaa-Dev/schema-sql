@@ -8,6 +8,7 @@ pub struct SqlIndexColumn {
     pub is_concurrent: bool,
     pub is_unique: bool,
     pub included_cols: Option<Vec<String>>,
+    pub predicate: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
