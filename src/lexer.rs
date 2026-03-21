@@ -887,7 +887,7 @@ mod tests {
     }
 
     #[test]
-    fn index_lexer_valid()  {
+    fn index_lexer_valid() {
         let mut lexer2 = Lexer {
             db: SupportedDBs::PostgreSQL,
             statements: r#"CREATE InDex -- Note
