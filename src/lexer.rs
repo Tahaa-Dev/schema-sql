@@ -51,7 +51,7 @@ impl<'a> Lexer<'a> {
         let mut columns = ColMap::new();
         let mut primary_key = None;
 
-        // Has to be an inline closure for capturing primary_key and columns mutably
+        // Has to be an inline closure for capturing `primary_key` and `columns` mutably
         let parse_col_def = |input| {
             let (input, col_name) = parse_ident(input)?;
             let (input, _) = parse_comment1(input)?;
@@ -107,27 +107,37 @@ impl<'a> Lexer<'a> {
                 "TIME" => SqlType::Time(args.first().copied()),
 
                 _ if &ty[0..7] == "INTERVAL" => SqlType::Interval {
-                    fields: match ty.as_str() {
-                        "INTERVAL YEAR" => IntervalField::Year,
-                        "INTERVAL MONTH" => IntervalField::Month,
-                        "INTERVAL DAY" => IntervalField::Day,
-                        "INTERVAL HOUR" => IntervalField::Hour,
-                        "INTERVAL MINUTE" => IntervalField::Minute,
-                        "INTERVAL SECOND" => IntervalField::Second,
-                        "INTERVAL YEAR TO MONTH" => IntervalField::YearToMonth,
-                        "INTERVAL DAY TO HOUR" => IntervalField::DayToHour,
-                        "INTERVAL DAY TO MINUTE" => IntervalField::DayToMinute,
-                        "INTERVAL DAY TO SECOND" => IntervalField::DayToSecond,
-                        "INTERVAL HOUR TO MINUTE" => {
+                    fields: match &ty.split_whitespace().collect::<Vec<&str>>()
+                        [..]
+                    {
+                        ["INTERVAL", "YEAR"] => IntervalField::Year,
+                        ["INTERVAL", "MONTH"] => IntervalField::Month,
+                        ["INTERVAL", "DAY"] => IntervalField::Day,
+                        ["INTERVAL", "HOUR"] => IntervalField::Hour,
+                        ["INTERVAL", "MINUTE"] => IntervalField::Minute,
+                        ["INTERVAL", "SECOND"] => IntervalField::Second,
+                        ["INTERVAL", "YEAR", "TO", "MONTH"] => {
+                            IntervalField::YearToMonth
+                        }
+                        ["INTERVAL", "DAY", "TO", "HOUR"] => {
+                            IntervalField::DayToHour
+                        }
+                        ["INTERVAL", "DAY", "TO", "MINUTE"] => {
+                            IntervalField::DayToMinute
+                        }
+                        ["INTERVAL", "DAY", "TO", "SECOND"] => {
+                            IntervalField::DayToSecond
+                        }
+                        ["INTERVAL", "HOUR", "TO", "MINUTE"] => {
                             IntervalField::HourToMinute
                         }
-                        "INTERVAL HOUR TO SECOND" => {
+                        ["INTERVAL", "HOUR", "TO", "SECOND"] => {
                             IntervalField::HourToSecond
                         }
-                        "INTERVAL MINUTE TO SECOND" => {
+                        ["INTERVAL", "MINUTE", "TO", "SECOND"] => {
                             IntervalField::MinuteToSecond
                         }
-                        "INTERVAL" => IntervalField::None,
+                        ["INTERVAL"] => IntervalField::None,
                         _ => unreachable!(),
                     },
                     precision: args.first().copied(),
@@ -249,23 +259,127 @@ impl<'a> Lexer<'a> {
 
     fn pg_parse_type(input: &str) -> IResult<&str, (&str, Option<Vec<usize>>)> {
         let (input, sql_type) = alt((
-            tag_no_case("DOUBLE PRECISION"),
-            tag_no_case("TIMESTAMP WITH TIME ZONE"),
-            tag_no_case("TIMESTAMP WITHOUT TIME ZONE"),
-            tag_no_case("CHARACTER VARYING"),
-            tag_no_case("INTERVAL YEAR"),
-            tag_no_case("INTERVAL MONTH"),
-            tag_no_case("INTERVAL DAY"),
-            tag_no_case("INTERVAL HOUR"),
-            tag_no_case("INTERVAL MINUTE"),
-            tag_no_case("INTERVAL SECOND"),
-            tag_no_case("INTERVAL YEAR TO MONTH"),
-            tag_no_case("INTERVAL DAY TO HOUR"),
-            tag_no_case("INTERVAL DAY TO MINUTE"),
-            tag_no_case("INTERVAL DAY TO SECOND"),
-            tag_no_case("INTERVAL HOUR TO MINUTE"),
-            tag_no_case("INTERVAL HOUR TO SECOND"),
-            tag_no_case("INTERVAL MINUTE TO SECOND"),
+            recognize((
+                tag_no_case("DOUBLE"),
+                multispace1,
+                tag_no_case("PRECISION"),
+            )),
+            recognize((
+                tag_no_case("TIMESTAMP"),
+                multispace1,
+                tag_no_case("WITH"),
+                multispace1,
+                tag_no_case("TIME"),
+                multispace1,
+                tag_no_case("ZONE"),
+            )),
+            recognize((
+                tag_no_case("TIMESTAMP"),
+                multispace1,
+                tag_no_case("WITHOUT"),
+                multispace1,
+                tag_no_case("TIME"),
+                multispace1,
+                tag_no_case("ZONE"),
+            )),
+            recognize((
+                tag_no_case("CHARACTER"),
+                multispace1,
+                tag_no_case("VARYING"),
+            )),
+            recognize((
+                tag_no_case("INTERVAL"),
+                multispace1,
+                tag_no_case("YEAR"),
+            )),
+            recognize((
+                tag_no_case("INTERVAL"),
+                multispace1,
+                tag_no_case("MONTH"),
+            )),
+            recognize((
+                tag_no_case("INTERVAL"),
+                multispace1,
+                tag_no_case("DAY"),
+            )),
+            recognize((
+                tag_no_case("INTERVAL"),
+                multispace1,
+                tag_no_case("HOUR"),
+            )),
+            recognize((
+                tag_no_case("INTERVAL"),
+                multispace1,
+                tag_no_case("MINUTE"),
+            )),
+            recognize((
+                tag_no_case("INTERVAL"),
+                multispace1,
+                tag_no_case("SECOND"),
+            )),
+            recognize((
+                tag_no_case("INTERVAL"),
+                multispace1,
+                tag_no_case("YEAR"),
+                multispace1,
+                tag_no_case("TO"),
+                multispace1,
+                tag_no_case("MONTH"),
+            )),
+            recognize((
+                tag_no_case("INTERVAL"),
+                multispace1,
+                tag_no_case("DAY"),
+                multispace1,
+                tag_no_case("TO"),
+                multispace1,
+                tag_no_case("HOUR"),
+            )),
+            recognize((
+                tag_no_case("INTERVAL"),
+                multispace1,
+                tag_no_case("DAY"),
+                multispace1,
+                tag_no_case("TO"),
+                multispace1,
+                tag_no_case("MINUTE"),
+            )),
+            recognize((
+                tag_no_case("INTERVAL"),
+                multispace1,
+                tag_no_case("DAY"),
+                multispace1,
+                tag_no_case("TO"),
+                multispace1,
+                tag_no_case("SECOND"),
+            )),
+            recognize((
+                tag_no_case("INTERVAL"),
+                multispace1,
+                tag_no_case("HOUR"),
+                multispace1,
+                tag_no_case("TO"),
+                multispace1,
+                tag_no_case("MINUTE"),
+            )),
+            recognize((
+                tag_no_case("INTERVAL"),
+                multispace1,
+                tag_no_case("HOUR"),
+                multispace1,
+                tag_no_case("TO"),
+                multispace1,
+                tag_no_case("SECOND"),
+            )),
+            recognize((
+                tag_no_case("INTERVAL"),
+                multispace1,
+                tag_no_case("MINUTE"),
+                multispace1,
+                tag_no_case("TO"),
+                multispace1,
+                tag_no_case("SECOND"),
+            )),
             alphanumeric1,
         ))
         .parse(input)?;
