@@ -25,7 +25,7 @@ impl SqlDB {
     pub fn from_sql(db: SupportedDBs, statements: &str) -> Result<Self> {
         let mut tables = TableMap::new();
 
-        let mut lexer = Lexer { db, statements };
+        let mut lexer = Lexer { db, statements, fks: vec![] };
 
         loop {
             loop {
@@ -70,13 +70,16 @@ impl SqlDB {
                         })?;
 
                     if let Some(ref included) = included {
-                        for column in included {
-                            if !table.columns.contains_key(column) {
-                                return Err(Error::MissingIdent(
-                                    column.clone(),
-                                    IdentType::Column,
-                                ));
-                            }
+                        let mut col = &String::new();
+
+                        if included.iter().any(|column| {
+                            col = column;
+                            !table.columns.contains_key(column)
+                        }) {
+                            return Err(Error::MissingIdent(
+                                col.clone(),
+                                IdentType::Column,
+                            ));
                         }
                     }
 
@@ -104,6 +107,29 @@ impl SqlDB {
 
             if lexer.statements.is_empty() {
                 break;
+            }
+        }
+
+        for (table, column) in lexer.fks {
+            if let Some(table_cols) = tables.get(table) {
+                if let Some(column) = column {
+                    if !table_cols.columns.contains_key(column) {
+                        return Err(Error::MissingIdent(
+                            column.to_string(),
+                            IdentType::Column,
+                        ));
+                    }
+                } else if table_cols.primary_key.is_none() {
+                    return Err(Error::MissingIdent(
+                        format!("PRIMARY KEY FOR TABLE: {}", table),
+                        IdentType::Column,
+                    ));
+                }
+            } else {
+                return Err(Error::MissingIdent(
+                    table.to_string(),
+                    IdentType::Table,
+                ));
             }
         }
 

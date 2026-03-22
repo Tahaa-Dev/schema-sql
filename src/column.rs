@@ -130,6 +130,7 @@ pub struct SqlColumn {
     pub is_primary_key: bool,
     pub default: Option<String>,
     pub check: Option<String>,
+    pub foreign_key: Option<ForeignKey>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -193,4 +194,10 @@ pub enum IntervalField {
     HourToSecond,
     MinuteToSecond,
     None,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ForeignKey {
+    pub table: String,
+    pub column: Option<String>,
 }

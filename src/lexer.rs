@@ -3,8 +3,9 @@
 #![allow(clippy::manual_inspect)]
 
 use crate::{
-    ColMap, Error, GistBufMode, IndexMethod, IndexNullOrder, IndexSortOrder,
-    IntervalField, Result, SqlColumn, SqlIndexColumn, SqlType, SupportedDBs,
+    ColMap, Error, ForeignKey, GistBufMode, IndexMethod, IndexNullOrder,
+    IndexSortOrder, IntervalField, Result, SqlColumn, SqlIndexColumn, SqlType,
+    SupportedDBs,
 };
 
 use nom::{
@@ -23,6 +24,10 @@ pub(crate) struct Lexer<'a> {
     #[allow(dead_code)]
     pub(crate) db: SupportedDBs,
     pub(crate) statements: &'a str,
+    pub(crate) fks: Vec<(
+        &'a str,         // referenced table
+        Option<&'a str>, // referenced column
+    )>,
 }
 
 impl<'a> Lexer<'a> {
@@ -50,6 +55,20 @@ impl<'a> Lexer<'a> {
     fn pg_parse_table(&mut self) -> Result<Created<'_>> {
         let mut columns = ColMap::new();
         let mut primary_key = None;
+        let mut fks = vec![];
+
+        self.parser(parse_comment1)?;
+        self.parser(opt((
+            tag_no_case("IF"),
+            parse_comment1,
+            tag_no_case("NOT"),
+            parse_comment1,
+            tag_no_case("EXISTS"),
+            parse_comment1,
+        )))?;
+
+        let table_name = self.parser(parse_ident)?;
+        self.parser(parse_comment0)?;
 
         // Has to be an inline closure for capturing `primary_key` and `columns` mutably
         let parse_col_def = |input| {
@@ -158,6 +177,7 @@ impl<'a> Lexer<'a> {
             let mut index = None;
             let mut default = None;
             let mut check = None;
+            let mut foreign_key = None;
 
             let (input, pk) = Self::pg_parse_constraints(input)?;
 
@@ -204,6 +224,28 @@ impl<'a> Lexer<'a> {
                         );
                     }
 
+                    _ if constraint.starts_with("REFERENCES") => {
+                        let (fk, _) =
+                            (tag_no_case("REFERENCES"), parse_comment0)
+                                .parse(s)?;
+
+                        let (left, table) = parse_ident(fk)?;
+                        let (left, _) = parse_comment0(left)?;
+
+                        let (_, column) = opt(delimited(
+                            (tag("("), parse_comment0),
+                            parse_ident,
+                            (parse_comment0, tag(")")),
+                        ))
+                        .parse(left)?;
+
+                        fks.push((table, column));
+                        foreign_key = Some(ForeignKey {
+                            table: table.to_string(),
+                            column: column.map(String::from),
+                        });
+                    }
+
                     _ => {}
                 }
             }
@@ -217,6 +259,7 @@ impl<'a> Lexer<'a> {
                     is_primary_key,
                     default,
                     check,
+                    foreign_key,
                 },
             );
 
@@ -230,19 +273,6 @@ impl<'a> Lexer<'a> {
             Ok((input, ()))
         };
 
-        self.parser(parse_comment1)?;
-        self.parser(opt((
-            tag_no_case("IF"),
-            parse_comment1,
-            tag_no_case("NOT"),
-            parse_comment1,
-            tag_no_case("EXISTS"),
-            parse_comment1,
-        )))?;
-
-        let table_name = self.parser(parse_ident)?;
-        self.parser(parse_comment0)?;
-
         self.parser(delimited(
             (tag("("), parse_comment0),
             separated_list1(
@@ -251,6 +281,8 @@ impl<'a> Lexer<'a> {
             ),
             (parse_comment0, tag(")")),
         ))?;
+
+        self.fks.extend_from_slice(&fks);
 
         Ok(Created::Table {
             name: table_name.to_string(),
@@ -879,6 +911,7 @@ mod tests {
                 name TEXT,
                 time INTERVAL    DAY TO  SECOND 
             )"#,
+            fks: vec![],
         };
 
         lexer.parse_statement().unwrap();
@@ -896,6 +929,7 @@ mod tests {
                     Note */
                 name
             )"#,
+            fks: vec![],
         };
 
         lexer2.parse_statement().unwrap();
