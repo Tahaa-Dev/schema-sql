@@ -133,7 +133,7 @@ pub struct SqlColumn {
     pub foreign_key: Option<ForeignKey>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SqlType {
     // Numeric
     SmallInt,
@@ -176,6 +176,8 @@ pub enum SqlType {
     SmallSerial,
     Serial,
     BigSerial,
+
+    Unknown(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

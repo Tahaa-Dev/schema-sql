@@ -80,97 +80,7 @@ impl<'a> Lexer<'a> {
             let args = args.unwrap_or(Vec::new());
             let ty = sql_type.to_uppercase();
 
-            let sql_type = match ty.as_str() {
-                "SMALLINT" | "INT2" => SqlType::SmallInt,
-                "INTEGER" | "INT" | "INT4" => SqlType::Integer,
-                "BIGINT" | "INT8" => SqlType::BigInt,
-                "REAL" | "FLOAT4" => SqlType::Real,
-                "DOUBLE PRECISION" | "FLOAT8" => SqlType::DoublePrecision,
-                "DECIMAL" => SqlType::Decimal(
-                    args.first().copied(),
-                    args.get(1).copied(),
-                ),
-                "NUMERIC" => SqlType::Numeric(
-                    args.first().copied(),
-                    args.get(1).copied(),
-                ),
-                "CHAR" | "CHARACTER" => {
-                    SqlType::Char(args.first().copied().unwrap_or(1))
-                }
-
-                "VARCHAR" | "CHARACTER VARYING" => {
-                    SqlType::VarChar(args.first().copied())
-                }
-
-                "TEXT" => SqlType::Text,
-                "BYTEA" => SqlType::ByteA,
-                "BOOLEAN" | "BOOL" => SqlType::Boolean,
-                "INET" => SqlType::Inet,
-                "CIDR" => SqlType::Cidr,
-                "MACADDR" => SqlType::MacAddr,
-                "JSON" => SqlType::Json,
-                "JSONB" => SqlType::Jsonb,
-                "UUID" => SqlType::Uuid,
-                "SMALLSERIAL" | "SERIAL2" => SqlType::SmallSerial,
-                "SERIAL" | "SERIAL4" => SqlType::Serial,
-                "BIGSERIAL" | "SERIAL8" => SqlType::BigSerial,
-                "TIMESTAMP" | "TIMESTAMP WITHOUT TIME ZONE" => {
-                    SqlType::Timestamp(args.first().copied())
-                }
-
-                "TIMESTAMPTZ" | "TIMESTAMP WITH TIME ZONE" => {
-                    SqlType::Timestamptz(args.first().copied())
-                }
-
-                "DATE" => SqlType::Date,
-                "TIME" => SqlType::Time(args.first().copied()),
-
-                _ if ty.starts_with("INTERVAL") => SqlType::Interval {
-                    fields: match ty
-                        .split_whitespace()
-                        .collect::<Vec<&str>>()
-                        .as_slice()
-                    {
-                        ["INTERVAL", "YEAR"] => IntervalField::Year,
-                        ["INTERVAL", "MONTH"] => IntervalField::Month,
-                        ["INTERVAL", "DAY"] => IntervalField::Day,
-                        ["INTERVAL", "HOUR"] => IntervalField::Hour,
-                        ["INTERVAL", "MINUTE"] => IntervalField::Minute,
-                        ["INTERVAL", "SECOND"] => IntervalField::Second,
-                        ["INTERVAL", "YEAR", "TO", "MONTH"] => {
-                            IntervalField::YearToMonth
-                        }
-                        ["INTERVAL", "DAY", "TO", "HOUR"] => {
-                            IntervalField::DayToHour
-                        }
-                        ["INTERVAL", "DAY", "TO", "MINUTE"] => {
-                            IntervalField::DayToMinute
-                        }
-                        ["INTERVAL", "DAY", "TO", "SECOND"] => {
-                            IntervalField::DayToSecond
-                        }
-                        ["INTERVAL", "HOUR", "TO", "MINUTE"] => {
-                            IntervalField::HourToMinute
-                        }
-                        ["INTERVAL", "HOUR", "TO", "SECOND"] => {
-                            IntervalField::HourToSecond
-                        }
-                        ["INTERVAL", "MINUTE", "TO", "SECOND"] => {
-                            IntervalField::MinuteToSecond
-                        }
-                        ["INTERVAL"] => IntervalField::None,
-                        _ => unreachable!(),
-                    },
-                    precision: args.first().copied(),
-                },
-
-                _ => {
-                    return Err(nom::Err::Failure(nom::error::Error::new(
-                        input,
-                        nom::error::ErrorKind::IsNot,
-                    )));
-                }
-            };
+            let sql_type = Self::match_type(ty, args.as_slice());
 
             let mut is_primary_key = false;
             let mut not_null = false;
@@ -432,6 +342,95 @@ impl<'a> Lexer<'a> {
         .parse(input)?;
 
         Ok((input, (sql_type, args)))
+    }
+
+    fn match_type(ty: String, args: &[usize]) -> SqlType {
+        match ty.as_str() {
+            "SMALLINT" | "INT2" => SqlType::SmallInt,
+            "INTEGER" | "INT" | "INT4" => SqlType::Integer,
+            "BIGINT" | "INT8" => SqlType::BigInt,
+            "REAL" | "FLOAT4" => SqlType::Real,
+            "DOUBLE PRECISION" | "FLOAT8" => SqlType::DoublePrecision,
+            "DECIMAL" => SqlType::Decimal(
+                args.first().copied(),
+                args.get(1).copied(),
+            ),
+            "NUMERIC" => SqlType::Numeric(
+                args.first().copied(),
+                args.get(1).copied(),
+            ),
+            "CHAR" | "CHARACTER" => {
+                SqlType::Char(args.first().copied().unwrap_or(1))
+            }
+
+            "VARCHAR" | "CHARACTER VARYING" => {
+                SqlType::VarChar(args.first().copied())
+            }
+
+            "TEXT" => SqlType::Text,
+            "BYTEA" => SqlType::ByteA,
+            "BOOLEAN" | "BOOL" => SqlType::Boolean,
+            "INET" => SqlType::Inet,
+            "CIDR" => SqlType::Cidr,
+            "MACADDR" => SqlType::MacAddr,
+            "JSON" => SqlType::Json,
+            "JSONB" => SqlType::Jsonb,
+            "UUID" => SqlType::Uuid,
+            "SMALLSERIAL" | "SERIAL2" => SqlType::SmallSerial,
+            "SERIAL" | "SERIAL4" => SqlType::Serial,
+            "BIGSERIAL" | "SERIAL8" => SqlType::BigSerial,
+            "TIMESTAMP" | "TIMESTAMP WITHOUT TIME ZONE" => {
+                SqlType::Timestamp(args.first().copied())
+            }
+
+            "TIMESTAMPTZ" | "TIMESTAMP WITH TIME ZONE" => {
+                SqlType::Timestamptz(args.first().copied())
+            }
+
+            "DATE" => SqlType::Date,
+            "TIME" => SqlType::Time(args.first().copied()),
+
+            _ if ty.starts_with("INTERVAL") => SqlType::Interval {
+                fields: match ty
+                    .split_whitespace()
+                    .collect::<Vec<&str>>()
+                    .as_slice()
+                {
+                    ["INTERVAL", "YEAR"] => IntervalField::Year,
+                    ["INTERVAL", "MONTH"] => IntervalField::Month,
+                    ["INTERVAL", "DAY"] => IntervalField::Day,
+                    ["INTERVAL", "HOUR"] => IntervalField::Hour,
+                    ["INTERVAL", "MINUTE"] => IntervalField::Minute,
+                    ["INTERVAL", "SECOND"] => IntervalField::Second,
+                    ["INTERVAL", "YEAR", "TO", "MONTH"] => {
+                        IntervalField::YearToMonth
+                    }
+                    ["INTERVAL", "DAY", "TO", "HOUR"] => {
+                        IntervalField::DayToHour
+                    }
+                    ["INTERVAL", "DAY", "TO", "MINUTE"] => {
+                        IntervalField::DayToMinute
+                    }
+                    ["INTERVAL", "DAY", "TO", "SECOND"] => {
+                        IntervalField::DayToSecond
+                    }
+                    ["INTERVAL", "HOUR", "TO", "MINUTE"] => {
+                        IntervalField::HourToMinute
+                    }
+                    ["INTERVAL", "HOUR", "TO", "SECOND"] => {
+                        IntervalField::HourToSecond
+                    }
+                    ["INTERVAL", "MINUTE", "TO", "SECOND"] => {
+                        IntervalField::MinuteToSecond
+                    }
+                    ["INTERVAL"] => IntervalField::None,
+                    _ => unreachable!(),
+                },
+                precision: args.first().copied(),
+            },
+
+            _ => SqlType::Unknown(ty),
+        }
     }
 
     fn pg_parse_constraints(input: &str) -> IResult<&str, Option<Vec<&str>>> {
