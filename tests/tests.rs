@@ -1,4 +1,6 @@
-use serde_sql::{ForeignKey, IndexMethod, SqlDB, SqlType, SupportedDBs};
+use serde_sql::{
+    FkAction, ForeignKey, IndexMethod, SqlDB, SqlType, SupportedDBs,
+};
 
 #[test]
 fn test_valid() {
@@ -13,8 +15,8 @@ fn test_valid() {
         
         CREATE TABLE IF NOT EXISTS purchases (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            user_id UUID REFERENCES users,
-            user_email TEXT REFERENCES users(email),
+            user_id UUID REFERENCES users ON DELETE SET NULL ON UPDATE CASCADE,
+            user_email TEXT REFERENCES users(email) ON DELETE SET NULL,
             username TEXT,
             name TEXT,
             amount DECIMAL(4, 2), -- Most expensive item is $1299.99
@@ -58,21 +60,30 @@ fn test_valid() {
     );
 
     assert_eq!(
-        db2.columns["user_id"].foreign_key,
-        Some(ForeignKey { table: "users".to_string(), column: None })
-    );
-    assert_eq!(
         db2.columns["user_email"].foreign_key,
         Some(ForeignKey {
             table: "users".to_string(),
-            column: Some("email".to_string())
+            column: Some("email".to_string()),
+            on_delete: Some(FkAction::SetNull),
+            on_update: None
+        })
+    );
+    assert_eq!(
+        db2.columns["user_id"].foreign_key,
+        Some(ForeignKey {
+            table: "users".to_string(),
+            column: None,
+            on_delete: Some(FkAction::SetNull),
+            on_update: Some(FkAction::Cascade)
         })
     );
     assert_eq!(
         db2.columns["username"].foreign_key,
         Some(ForeignKey {
             table: "users".to_string(),
-            column: Some("name".to_string())
+            column: Some("name".to_string()),
+            on_delete: None,
+            on_update: None
         })
     );
 }

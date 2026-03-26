@@ -122,7 +122,7 @@ pub enum IndexNullOrder {
     NullsLast,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct SqlColumn {
     pub sql_type: SqlType,
     pub index: Option<SqlIndexColumn>,
@@ -182,6 +182,12 @@ pub enum SqlType {
     Array(Box<SqlType>, usize),
 }
 
+impl Default for SqlType {
+    fn default() -> Self {
+        Self::Unknown(String::new())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IntervalField {
     Year,
@@ -200,8 +206,19 @@ pub enum IntervalField {
     None,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct ForeignKey {
     pub table: String,
     pub column: Option<String>,
+    pub on_delete: Option<FkAction>,
+    pub on_update: Option<FkAction>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FkAction {
+    NoAction,
+    Restrict,
+    Cascade,
+    SetNull,
+    SetDefault,
 }

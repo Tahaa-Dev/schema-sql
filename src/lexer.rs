@@ -3,9 +3,9 @@
 #![allow(clippy::manual_inspect)]
 
 use crate::{
-    ColMap, Error, ForeignKey, GistBufMode, IndexMethod, IndexNullOrder,
-    IndexSortOrder, IntervalField, Result, SqlColumn, SqlIndexColumn, SqlType,
-    SupportedDBs,
+    ColMap, Error, FkAction, ForeignKey, GistBufMode, IndexMethod,
+    IndexNullOrder, IndexSortOrder, IntervalField, Result, SqlColumn,
+    SqlIndexColumn, SqlType, SupportedDBs,
 };
 
 use nom::{
@@ -13,7 +13,7 @@ use nom::{
     branch::alt,
     bytes::complete::{is_not, tag, tag_no_case, take_until},
     character::complete::{
-        alphanumeric1, digit1, multispace0, multispace1, none_of,
+        alphanumeric1, anychar, char, digit1, multispace0, multispace1, none_of,
     },
     combinator::{map_res, not, opt, peek, recognize, value},
     multi::{many0, many1, separated_list1},
@@ -121,6 +121,8 @@ impl<'a> Lexer<'a> {
                         col.foreign_key = Some(ForeignKey {
                             table: ref_table.to_string(),
                             column: ref_col.map(String::from),
+                            on_delete: None,
+                            on_update: None,
                         });
                     } else {
                         return Err(nom::Err::Failure(nom::error::Error::new(
@@ -151,10 +153,12 @@ impl<'a> Lexer<'a> {
                 let mut default = None;
                 let mut check = None;
                 let mut foreign_key = None;
+                let mut on_delete = None;
+                let mut on_update = None;
 
                 let (input, pk) = Self::pg_parse_constraints(input)?;
 
-                for s in pk.unwrap_or(vec![]) {
+                for s in pk {
                     let constraint = s.to_uppercase();
 
                     match constraint.as_str() {
@@ -200,7 +204,7 @@ impl<'a> Lexer<'a> {
 
                         _ if constraint.starts_with("REFERENCES") => {
                             let (fk, _) =
-                                (tag_no_case("REFERENCES"), parse_comment0)
+                                (tag_no_case("REFERENCES"), parse_comment1)
                                     .parse(s)?;
 
                             let (left, table) = parse_ident(fk)?;
@@ -217,6 +221,36 @@ impl<'a> Lexer<'a> {
                             foreign_key = Some(ForeignKey {
                                 table: table.to_string(),
                                 column: column.map(String::from),
+                                on_delete: None,
+                                on_update: None,
+                            });
+                        }
+
+                        _ if constraint.starts_with("ON") => {
+                            alt((
+                                |s| {
+                                    let (s, action) =
+                                        Self::pg_parse_fkaction("DELETE")
+                                            .parse(s)?;
+                                    on_delete = Some(action);
+
+                                    Ok((s, ()))
+                                },
+                                |s| {
+                                    let (s, action) =
+                                        Self::pg_parse_fkaction("UPDATE")
+                                            .parse(s)?;
+                                    on_update = Some(action);
+
+                                    Ok((s, ()))
+                                },
+                            ))
+                            .parse(s)?;
+
+                            foreign_key = foreign_key.map(|mut fk| {
+                                fk.on_delete = on_delete;
+                                fk.on_update = on_update;
+                                fk
                             });
                         }
 
@@ -270,6 +304,48 @@ impl<'a> Lexer<'a> {
             columns,
             primary_key,
         })
+    }
+
+    fn pg_parse_fkaction(
+        event: &str,
+    ) -> impl nom::Parser<
+        &'a str,
+        Output = FkAction,
+        Error = nom::error::Error<&'a str>,
+    > {
+        preceded(
+            (
+                tag_no_case("ON"),
+                parse_comment1,
+                tag_no_case(event),
+                parse_comment1,
+            ),
+            |s| {
+                let (s, action) = alt((
+                    value(
+                        FkAction::NoAction,
+                        (tag_no_case("NO"), multispace1, tag_no_case("ACTION")),
+                    ),
+                    value(FkAction::Restrict, tag_no_case("RESTRICT")),
+                    value(FkAction::Cascade, tag_no_case("CASCADE")),
+                    value(
+                        FkAction::SetNull,
+                        (tag_no_case("SET"), multispace1, tag_no_case("NULL")),
+                    ),
+                    value(
+                        FkAction::SetDefault,
+                        (
+                            tag_no_case("SET"),
+                            multispace1,
+                            tag_no_case("DEFAULT"),
+                        ),
+                    ),
+                ))
+                .parse(s)?;
+
+                Ok((s, action))
+            },
+        )
     }
 
     fn pg_parse_type(input: &str) -> IResult<&str, (&str, Option<Vec<usize>>)> {
@@ -502,8 +578,8 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn pg_parse_constraints(input: &str) -> IResult<&str, Option<Vec<&str>>> {
-        opt(many0(preceded(
+    fn pg_parse_constraints(input: &str) -> IResult<&str, Vec<&str>> {
+        many0(preceded(
             parse_comment1,
             alt((
                 recognize((
@@ -518,25 +594,88 @@ impl<'a> Lexer<'a> {
                     tag_no_case("NULL"),
                 )),
                 recognize((
+                    tag_no_case("ON"),
+                    parse_comment1,
+                    alt((tag_no_case("DELETE"), tag_no_case("UPDATE"))),
+                    parse_comment1,
+                    alt((
+                        tag_no_case("RESTRICT"),
+                        tag_no_case("CASCADE"),
+                        recognize((
+                            tag_no_case("NO"),
+                            multispace1,
+                            tag_no_case("ACTION"),
+                        )),
+                        recognize((
+                            tag_no_case("SET"),
+                            multispace1,
+                            tag_no_case("NULL"),
+                        )),
+                        recognize((
+                            tag_no_case("SET"),
+                            multispace1,
+                            tag_no_case("DEFAULT"),
+                        )),
+                    )),
+                )),
+                recognize((
                     tag_no_case("CHECK"),
                     parse_comment0,
-                    Self::pg_parse_check_expr,
+                    Self::parse_parens,
                 )),
-                recognize(many0(alt((
-                    alphanumeric1,
-                    multispace1,
-                    tag("_"),
-                    tag("()"),
-                    delimited(tag("("), is_not(")"), tag(")")),
-                    delimited(tag("'"), is_not("'"), tag("'")),
-                    delimited(tag("\""), is_not("\""), tag("\"")),
-                )))),
+                recognize((
+                    tag_no_case("DEFAULT"),
+                    parse_comment1,
+                    alt((
+                        delimited(
+                            tag("\""),
+                            alt((
+                                recognize(many0((
+                                    is_not("\\"),
+                                    tag("\\"),
+                                    anychar,
+                                ))),
+                                recognize(many0((
+                                    is_not("\""),
+                                    tag("\""),
+                                    char('"'),
+                                ))),
+                                is_not("\""),
+                            )),
+                            tag("\""),
+                        ),
+                        delimited(
+                            tag("'"),
+                            alt((
+                                recognize(many0((
+                                    is_not("\\"),
+                                    tag("\\"),
+                                    anychar,
+                                ))),
+                                recognize(many0((is_not("\'"), tag("''")))),
+                                is_not("'"),
+                            )),
+                            tag("'"),
+                        ),
+                        Self::parse_parens,
+                    )),
+                )),
+                recognize((
+                    tag_no_case("REFERENCES"),
+                    parse_comment1,
+                    parse_ident,
+                    opt(delimited(
+                        (parse_comment0, tag("(")),
+                        parse_ident,
+                        tag(")"),
+                    )),
+                )),
             )),
-        )))
+        ))
         .parse(input)
     }
 
-    fn pg_parse_check_expr(input: &str) -> IResult<&str, &str> {
+    fn parse_parens(input: &str) -> IResult<&str, &str> {
         let mut depth = 0;
         let mut chars = input.char_indices().peekable();
         let mut in_single_quote = false;
@@ -923,10 +1062,10 @@ fn parse_ident(input: &str) -> IResult<&str, &str> {
     .parse(input)
 }
 
-pub(crate) fn parse_comment0(input: &str) -> IResult<&str, ()> {
+pub(crate) fn parse_comment0(input: &str) -> IResult<&str, &str> {
     let (input, _) = multispace0(input)?;
 
-    let (input, _) = opt(alt((
+    let (input, _) = many0(alt((
         // many0(none_of("\r\n")) instead of is_not("\r\n") is because is_not fails if the pattern
         // is not found while many0(none_of) doesn't which is needed since the comment could be at
         // EOF where is_not wouldn't find \n or \r and it would fail
@@ -935,19 +1074,19 @@ pub(crate) fn parse_comment0(input: &str) -> IResult<&str, ()> {
     )))
     .parse(input)?;
 
-    Ok((input, ()))
+    Ok((input, ""))
 }
 
-pub(crate) fn parse_comment1(input: &str) -> IResult<&str, ()> {
+pub(crate) fn parse_comment1(input: &str) -> IResult<&str, &str> {
     let (input, _) = multispace1(input)?;
 
-    let (input, _) = opt(alt((
+    let (input, _) = many0(alt((
         value((), (tag("--"), many0(none_of("\r\n")), multispace1)),
         value((), (tag("/*"), take_until("*/"), tag("*/"), multispace1)),
     )))
     .parse(input)?;
 
-    Ok((input, ()))
+    Ok((input, ""))
 }
 
 pub(crate) enum Created<'a> {
