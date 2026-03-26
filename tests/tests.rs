@@ -20,7 +20,7 @@ fn test_valid() {
             username TEXT,
             name TEXT,
             amount DECIMAL(4, 2), -- Most expensive item is $1299.99
-            FOREIGN KEY (username) REFERENCES users(name)
+            FOREIGN KEY (username) REFERENCES users(name) ON UPDATE RESTRICT
         );
 
         CREATE INDEX ON users USING hash (id) INCLUDE (email, name) WITH (fillfactor=90 /* need 90 fillfactor */) WHERE total_purchases > 1000.00 ;"#;
@@ -83,7 +83,7 @@ fn test_valid() {
             table: "users".to_string(),
             column: Some("name".to_string()),
             on_delete: None,
-            on_update: None
+            on_update: Some(FkAction::Restrict),
         })
     );
 }

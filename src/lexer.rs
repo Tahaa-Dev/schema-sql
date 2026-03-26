@@ -112,6 +112,51 @@ impl<'a> Lexer<'a> {
                 ))
                 .parse(input)?;
 
+                let mut on_delete = None;
+                let mut on_update = None;
+
+                let (input, action) =
+                    opt(preceded(parse_comment0, Self::pg_parse_fkaction))
+                        .parse(input)?;
+
+                if let Some(action) = action {
+                    alt((
+                        |s| {
+                            let (_, action) =
+                                Self::pg_match_fkaction("DELETE").parse(s)?;
+                            on_delete = Some(action);
+
+                            Ok(("", ()))
+                        },
+                        |s| {
+                            let (_, action) =
+                                Self::pg_match_fkaction("UPDATE").parse(s)?;
+                            on_update = Some(action);
+
+                            Ok(("", ()))
+                        },
+                    ))
+                    .parse(action)?;
+                }
+
+                let (input, action) =
+                    opt(preceded(parse_comment0, Self::pg_parse_fkaction))
+                        .parse(input)?;
+
+                if let Some(action) = action {
+                    if on_delete.is_none() {
+                        let (_, action) =
+                            Self::pg_match_fkaction("DELETE").parse(action)?;
+
+                        on_delete = Some(action);
+                    } else if on_update.is_none() {
+                        let (_, action) =
+                            Self::pg_match_fkaction("UPDATE").parse(action)?;
+
+                        on_update = Some(action);
+                    }
+                }
+
                 for (i, fk_col) in fk_cols.iter().enumerate() {
                     let ref_col =
                         ref_cols.as_ref().and_then(|cols| cols.get(i).copied());
@@ -121,8 +166,8 @@ impl<'a> Lexer<'a> {
                         col.foreign_key = Some(ForeignKey {
                             table: ref_table.to_string(),
                             column: ref_col.map(String::from),
-                            on_delete: None,
-                            on_update: None,
+                            on_delete,
+                            on_update,
                         });
                     } else {
                         return Err(nom::Err::Failure(nom::error::Error::new(
@@ -230,7 +275,7 @@ impl<'a> Lexer<'a> {
                             alt((
                                 |s| {
                                     let (s, action) =
-                                        Self::pg_parse_fkaction("DELETE")
+                                        Self::pg_match_fkaction("DELETE")
                                             .parse(s)?;
                                     on_delete = Some(action);
 
@@ -238,7 +283,7 @@ impl<'a> Lexer<'a> {
                                 },
                                 |s| {
                                     let (s, action) =
-                                        Self::pg_parse_fkaction("UPDATE")
+                                        Self::pg_match_fkaction("UPDATE")
                                             .parse(s)?;
                                     on_update = Some(action);
 
@@ -306,7 +351,7 @@ impl<'a> Lexer<'a> {
         })
     }
 
-    fn pg_parse_fkaction(
+    fn pg_match_fkaction(
         event: &str,
     ) -> impl nom::Parser<
         &'a str,
@@ -346,6 +391,35 @@ impl<'a> Lexer<'a> {
                 Ok((s, action))
             },
         )
+    }
+
+    fn pg_parse_fkaction(input: &str) -> IResult<&str, &str> {
+        recognize((
+            tag_no_case("ON"),
+            parse_comment1,
+            alt((tag_no_case("DELETE"), tag_no_case("UPDATE"))),
+            parse_comment1,
+            alt((
+                tag_no_case("RESTRICT"),
+                tag_no_case("CASCADE"),
+                recognize((
+                    tag_no_case("NO"),
+                    multispace1,
+                    tag_no_case("ACTION"),
+                )),
+                recognize((
+                    tag_no_case("SET"),
+                    multispace1,
+                    tag_no_case("NULL"),
+                )),
+                recognize((
+                    tag_no_case("SET"),
+                    multispace1,
+                    tag_no_case("DEFAULT"),
+                )),
+            )),
+        ))
+        .parse(input)
     }
 
     fn pg_parse_type(input: &str) -> IResult<&str, (&str, Option<Vec<usize>>)> {
@@ -594,35 +668,11 @@ impl<'a> Lexer<'a> {
                     tag_no_case("NULL"),
                 )),
                 recognize((
-                    tag_no_case("ON"),
-                    parse_comment1,
-                    alt((tag_no_case("DELETE"), tag_no_case("UPDATE"))),
-                    parse_comment1,
-                    alt((
-                        tag_no_case("RESTRICT"),
-                        tag_no_case("CASCADE"),
-                        recognize((
-                            tag_no_case("NO"),
-                            multispace1,
-                            tag_no_case("ACTION"),
-                        )),
-                        recognize((
-                            tag_no_case("SET"),
-                            multispace1,
-                            tag_no_case("NULL"),
-                        )),
-                        recognize((
-                            tag_no_case("SET"),
-                            multispace1,
-                            tag_no_case("DEFAULT"),
-                        )),
-                    )),
-                )),
-                recognize((
                     tag_no_case("CHECK"),
                     parse_comment0,
                     Self::parse_parens,
                 )),
+                Self::pg_parse_fkaction,
                 recognize((
                     tag_no_case("DEFAULT"),
                     parse_comment1,
