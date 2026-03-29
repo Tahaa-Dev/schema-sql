@@ -1,11 +1,10 @@
-use hashbrown::HashMap;
-use indexmap::IndexMap;
-use nom::{Parser, bytes::complete::tag};
-
 use crate::{
-    Error, IdentType, Result, SqlColumn, SupportedDBs,
+    Error, ErrorKind, IdentType, Result, SqlColumn, SupportedDBs,
     lexer::{Created, Lexer, parse_comment0},
 };
+use hashbrown::HashMap;
+use indexmap::IndexMap;
+use nom::bytes::complete::tag;
 
 pub type ColMap = IndexMap<String, SqlColumn>;
 pub type TableMap = HashMap<String, SqlTable>;
@@ -24,31 +23,26 @@ pub struct SqlDB {
 impl SqlDB {
     pub fn from_sql(db: SupportedDBs, statements: &str) -> Result<Self> {
         let mut tables = TableMap::new();
+        let mut prev = String::new();
 
         let mut lexer = Lexer { db, statements, fks: vec![] };
 
         loop {
-            loop {
-                lexer.parser(parse_comment0)?;
-                if !lexer.statements.starts_with("/*")
-                    && !lexer.statements.starts_with("--")
-                {
-                    break;
-                }
-            }
+            lexer.parser(parse_comment0)?;
 
             if lexer.statements.is_empty() {
                 break;
             }
 
-            let created = lexer.parse_statement()?;
+            let (created, statement) = lexer.parse_statement()?;
+            prev.push_str(statement);
 
             match created {
                 Created::Table { name, columns, primary_key } => {
                     if tables.contains_key(&name) {
-                        return Err(Error::DuplicateIdent(
-                            name,
-                            IdentType::Table,
+                        return Err(Error::new(
+                            ErrorKind::DuplicateIdent(name, IdentType::Table),
+                            prev,
                         ));
                     } else {
                         unsafe {
@@ -63,9 +57,12 @@ impl SqlDB {
                 Created::Index { table_name, columns, included, predicate } => {
                     let table =
                         tables.get_mut(table_name).ok_or_else(|| {
-                            Error::MissingIdent(
-                                table_name.to_string(),
-                                IdentType::Table,
+                            Error::new(
+                                ErrorKind::MissingIdent(
+                                    table_name.to_string(),
+                                    IdentType::Table,
+                                ),
+                                &prev,
                             )
                         })?;
 
@@ -76,9 +73,12 @@ impl SqlDB {
                             col = column;
                             !table.columns.contains_key(column)
                         }) {
-                            return Err(Error::MissingIdent(
-                                col.clone(),
-                                IdentType::Column,
+                            return Err(Error::new(
+                                ErrorKind::MissingIdent(
+                                    col.clone(),
+                                    IdentType::Column,
+                                ),
+                                statement,
                             ));
                         }
                     }
@@ -91,9 +91,12 @@ impl SqlDB {
                             .columns
                             .get_mut(col_name)
                             .ok_or_else(|| {
-                                Error::MissingIdent(
-                                    col_name.to_string(),
-                                    IdentType::Column,
+                                Error::new(
+                                    ErrorKind::MissingIdent(
+                                        col_name.to_string(),
+                                        IdentType::Column,
+                                    ),
+                                    statement,
                                 )
                             })?
                             .index = Some(index);
@@ -101,9 +104,7 @@ impl SqlDB {
                 }
             }
 
-            lexer.parser(|remaining| {
-                (parse_comment0, tag(";"), parse_comment0).parse(remaining)
-            })?;
+            lexer.parser((parse_comment0, tag(";"), parse_comment0))?;
 
             if lexer.statements.is_empty() {
                 break;
@@ -114,21 +115,27 @@ impl SqlDB {
             if let Some(table_cols) = tables.get(table) {
                 if let Some(column) = column {
                     if !table_cols.columns.contains_key(column) {
-                        return Err(Error::MissingIdent(
-                            column.to_string(),
-                            IdentType::Column,
+                        return Err(Error::new(
+                            ErrorKind::MissingIdent(
+                                column.to_string(),
+                                IdentType::Column,
+                            ),
+                            statements,
                         ));
                     }
                 } else if table_cols.primary_key.is_none() {
-                    return Err(Error::MissingIdent(
-                        format!("PRIMARY KEY FOR TABLE: {}", table),
-                        IdentType::Column,
+                    return Err(Error::new(
+                        ErrorKind::MissingPrimaryKey(table.to_string()),
+                        statements,
                     ));
                 }
             } else {
-                return Err(Error::MissingIdent(
-                    table.to_string(),
-                    IdentType::Table,
+                return Err(Error::new(
+                    ErrorKind::MissingIdent(
+                        table.to_string(),
+                        IdentType::Table,
+                    ),
+                    statements,
                 ));
             }
         }

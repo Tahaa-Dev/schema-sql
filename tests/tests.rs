@@ -1,5 +1,6 @@
-use serde_sql::{
+use schema_sql::{
     FkAction, ForeignKey, IndexMethod, SqlDB, SqlType, SupportedDBs,
+    error::ErrorKind,
 };
 
 #[test]
@@ -92,14 +93,17 @@ fn test_valid() {
 fn test_invalid() {
     let res = SqlDB::from_sql(
         SupportedDBs::PostgreSQL,
-        r#"CREATE table should_fail ON users WITH"#,
+        "CREATE table should_fail ON users WITH",
     );
 
     assert_eq!(
         unsafe { res.unwrap_err_unchecked() },
-        serde_sql::error::Error::UnexpectedToken(
-            "ON users WITH".into(),
-            "<KEYWORD>".into()
+        schema_sql::error::Error::new(
+            ErrorKind::UnexpectedToken {
+                found: "ON".into(),
+                expected: "<KEYWORD>".into()
+            },
+            "ON users WITH"
         )
     );
 }
@@ -113,9 +117,12 @@ fn test_invalid_fk_missing_table() {
 
     assert_eq!(
         unsafe { res.unwrap_err_unchecked() },
-        serde_sql::error::Error::MissingIdent(
-            "users".to_string(),
-            serde_sql::error::IdentType::Table
+        schema_sql::error::Error::new(
+            ErrorKind::MissingIdent(
+                "users".to_string(),
+                schema_sql::error::IdentType::Table
+            ),
+            "CREATE TABLE IF NOT EXISTS purchases (user_id UUID PRIMARY KEY REFERENCES users(id));"
         )
     )
 }
@@ -125,14 +132,15 @@ fn test_invalid_fk_missing_pk() {
     let res = SqlDB::from_sql(
         SupportedDBs::PostgreSQL,
         r#"CREATE TABLE IF NOT EXISTS users (id UUID);
-        CREATE TABLE IF NOT EXISTS purchases (user_id UUID PRIMARY KEY REFERENCES users);"#,
+CREATE TABLE IF NOT EXISTS purchases (user_id UUID PRIMARY KEY REFERENCES users);"#,
     );
 
     assert_eq!(
         unsafe { res.unwrap_err_unchecked() },
-        serde_sql::error::Error::MissingIdent(
-            "PRIMARY KEY FOR TABLE: users".to_string(),
-            serde_sql::error::IdentType::Column
+        schema_sql::error::Error::new(
+            ErrorKind::MissingPrimaryKey("users".to_string(),),
+            r#"CREATE TABLE IF NOT EXISTS users (id UUID);
+CREATE TABLE IF NOT EXISTS purchases (user_id UUID PRIMARY KEY REFERENCES users);"#,
         )
     )
 }
@@ -142,14 +150,18 @@ fn test_invalid_fk_missing_col() {
     let res = SqlDB::from_sql(
         SupportedDBs::PostgreSQL,
         r#"CREATE TABLE IF NOT EXISTS users (name TEXT);
-        CREATE TABLE IF NOT EXISTS purchases (user_id UUID PRIMARY KEY REFERENCES users(id));"#,
+CREATE TABLE IF NOT EXISTS purchases (user_id UUID PRIMARY KEY REFERENCES users(id));"#,
     );
 
     assert_eq!(
         unsafe { res.unwrap_err_unchecked() },
-        serde_sql::error::Error::MissingIdent(
-            "id".to_string(),
-            serde_sql::error::IdentType::Column
+        schema_sql::error::Error::new(
+            ErrorKind::MissingIdent(
+                "id".to_string(),
+                schema_sql::error::IdentType::Column
+            ),
+            r#"CREATE TABLE IF NOT EXISTS users (name TEXT);
+CREATE TABLE IF NOT EXISTS purchases (user_id UUID PRIMARY KEY REFERENCES users(id));"#,
         )
     )
 }
@@ -159,14 +171,18 @@ fn test_invalid_table_fk_missing_col() {
     let res = SqlDB::from_sql(
         SupportedDBs::PostgreSQL,
         r#"CREATE TABLE IF NOT EXISTS users (name TEXT);
-        CREATE TABLE IF NOT EXISTS purchases (user_id UUID PRIMARY KEY, FOREIGN KEY (user_id) REFERENCES users(id));"#,
+CREATE TABLE IF NOT EXISTS purchases (user_id UUID PRIMARY KEY, FOREIGN KEY (user_id) REFERENCES users(id));"#,
     );
 
     assert_eq!(
         unsafe { res.unwrap_err_unchecked() },
-        serde_sql::error::Error::MissingIdent(
-            "id".to_string(),
-            serde_sql::error::IdentType::Column
+        schema_sql::error::Error::new(
+            ErrorKind::MissingIdent(
+                "id".to_string(),
+                schema_sql::error::IdentType::Column
+            ),
+            r#"CREATE TABLE IF NOT EXISTS users (name TEXT);
+CREATE TABLE IF NOT EXISTS purchases (user_id UUID PRIMARY KEY, FOREIGN KEY (user_id) REFERENCES users(id));"#,
         )
     )
 }

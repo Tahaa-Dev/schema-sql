@@ -1,5 +1,5 @@
 [package]
-name = "serde-sql"
+name = "schema-sql"
 version = "0.1.0"
 edition = "2024"
 

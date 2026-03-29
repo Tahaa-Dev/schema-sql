@@ -3,13 +3,13 @@
 #![allow(clippy::manual_inspect)]
 
 use crate::{
-    ColMap, Error, FkAction, ForeignKey, GistBufMode, IndexMethod,
+    ColMap, Error, ErrorKind, FkAction, ForeignKey, GistBufMode, IndexMethod,
     IndexNullOrder, IndexSortOrder, IntervalField, Result, SqlColumn,
     SqlIndexColumn, SqlType, SupportedDBs,
 };
 
 use nom::{
-    IResult, Parser,
+    IResult, Offset, Parser,
     branch::alt,
     bytes::complete::{is_not, tag, tag_no_case, take_until},
     character::complete::{
@@ -31,7 +31,8 @@ pub(crate) struct Lexer<'a> {
 }
 
 impl<'a> Lexer<'a> {
-    pub(crate) fn parse_statement(&mut self) -> Result<Created<'_>> {
+    pub(crate) fn parse_statement(&mut self) -> Result<(Created<'_>, &'a str)> {
+        let og_statements = self.statements;
         self.parser(parse_comment0)?;
         self.parser(tag_no_case("CREATE"))?;
         self.parser(parse_comment1)?;
@@ -44,12 +45,15 @@ impl<'a> Lexer<'a> {
             )),
         )))?;
 
+        let og = &og_statements[..og_statements.offset(self.statements)];
+
         let output = output.to_uppercase();
 
         match output.as_str() {
             "TABLE" => self.pg_parse_table(),
             _ => self.pg_parse_index(output.starts_with("UNIQUE")),
         }
+        .map(|c| (c, og))
     }
 
     fn pg_parse_table(&mut self) -> Result<Created<'_>> {
@@ -842,8 +846,11 @@ impl<'a> Lexer<'a> {
             });
 
         if let Some(IndexMethod::Other) = index_method {
-            return Err(Error::InvalidMethod(
-                idx_method.unwrap_or_default().into(),
+            return Err(Error::new(
+                ErrorKind::InvalidIndexMethod(
+                    unsafe { idx_method.unwrap_unchecked() }.to_string(),
+                ),
+                self.statements,
             ));
         }
 
@@ -890,9 +897,12 @@ impl<'a> Lexer<'a> {
         )))?;
 
         if pairs.is_some() {
-            idx_method.ok_or(Error::UnexpectedToken(
-                self.statements.into(),
-                "Index Method".into(),
+            idx_method.ok_or(Error::new(
+                ErrorKind::UnexpectedToken {
+                    expected: self.statements.into(),
+                    found: "INDEX METHOD".into(),
+                },
+                self.statements,
             ))?;
         }
 
@@ -933,7 +943,12 @@ impl<'a> Lexer<'a> {
                         "ON" | "TRUE" => GistBufMode::On,
                         "OFF" | "FALSE" => GistBufMode::Off,
                         "AUTO" => GistBufMode::Auto,
-                        _ => return Err(Error::ParseFailure(value.into())),
+                        _ => {
+                            return Err(Error::new(
+                                ErrorKind::InvalidValue(value.to_string()),
+                                self.statements,
+                            ));
+                        }
                     };
 
                     let mut r = Ok(());
@@ -948,7 +963,12 @@ impl<'a> Lexer<'a> {
                     let v = match value.to_uppercase().as_str() {
                         "ON" | "TRUE" => true,
                         "OFF" | "FALSE" => false,
-                        _ => return Err(Error::ParseFailure(value.into())),
+                        _ => {
+                            return Err(Error::new(
+                                ErrorKind::InvalidValue(value.to_string()),
+                                self.statements,
+                            ));
+                        }
                     };
 
                     let mut r = Ok(());
@@ -972,7 +992,15 @@ impl<'a> Lexer<'a> {
                 _ => Err(()),
             };
 
-            res.map_err(|_| Error::InvalidParam(key.into()))?;
+            res.map_err(|_| {
+                Error::new(
+                    ErrorKind::InvalidStorageParam {
+                        key: key.to_string(),
+                        value: value.to_string(),
+                    },
+                    self.statements,
+                )
+            })?;
         }
 
         Ok(())
