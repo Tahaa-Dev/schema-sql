@@ -34,7 +34,8 @@ pub(crate) struct Lexer<'a> {
 impl<'a> Lexer<'a> {
     pub(crate) fn parse_statement(&mut self) -> Result<Created<'_>> {
         // parse_comment0 cannot fail
-        self.parser(parse_comment0).map_into(ErrorKind::UnexpectedEOF, 0)?;
+        self.parser(parse_comment0)
+            .map_into(ErrorKind::UnexpectedEOF, self.start_offset())?;
 
         let create = self.parser(tag_no_case("CREATE")).map_into(
             ErrorKind::InvalidCommand(self.next_token().to_string()),
@@ -86,10 +87,26 @@ impl<'a> Lexer<'a> {
             parse_comment1,
             tag_no_case("EXISTS"),
             parse_comment1,
-        )))?;
+        )))
+        .map_into(
+            ErrorKind::UnexpectedToken {
+                found: self.next_token().to_string(),
+                expected: "IF NOT EXISTS".to_string(),
+            },
+            self.start_offset(),
+        )?;
 
-        let table_name = self.parser(parse_ident)?;
-        self.parser(parse_comment0)?;
+        let table_name = self.parser(parse_ident).map_into(
+            ErrorKind::UnexpectedToken {
+                found: self.next_token().to_string(),
+                expected: "table name".to_string(),
+            },
+            self.start_offset(),
+        )?;
+        self.parser(parse_comment0).map_into(
+            ErrorKind::NonWhitespace(self.next_token().to_string()),
+            self.start_offset(),
+        )?;
 
         // Has to be an inline closure for capturing `primary_key` and `columns` mutably
         let parse_col_def = |input| {
@@ -174,7 +191,7 @@ impl<'a> Lexer<'a> {
                         });
                     } else {
                         return Err(nom::Err::Failure(nom::error::Error::new(
-                            *fk_col,
+                            input,
                             nom::error::ErrorKind::IsNot,
                         )));
                     }
@@ -307,7 +324,14 @@ impl<'a> Lexer<'a> {
                 parse_col_def,
             ),
             (parse_comment0, tag(")")),
-        ))?;
+        ))
+        .map_into(
+            ErrorKind::UnexpectedToken {
+                found: self.next_token().to_string(),
+                expected: "column definitions".to_string(),
+            },
+            self.start_offset(),
+        )?;
 
         self.fks.extend_from_slice(&fks);
 
@@ -712,13 +736,23 @@ impl<'a> Lexer<'a> {
     }
 
     fn pg_parse_index(&mut self, is_unique: bool) -> Result<Created<'_>> {
-        self.parser(parse_comment1)?;
+        self.parser(parse_comment1).map_into(
+            ErrorKind::NonWhitespace(self.next_token().to_string()),
+            self.start_offset(),
+        )?;
 
         let is_concurrent = self
             .parser(opt(terminated(
                 tag_no_case("CONCURRENTLY"),
                 parse_comment1,
-            )))?
+            )))
+            .map_into(
+                ErrorKind::UnexpectedToken {
+                    found: self.next_token().to_string(),
+                    expected: "CONCURRENTLY".to_string(),
+                },
+                self.start_offset(),
+            )?
             .is_some();
 
         self.parser(opt((
@@ -728,10 +762,17 @@ impl<'a> Lexer<'a> {
             parse_comment1,
             tag_no_case("EXISTS"),
             parse_comment1,
-        )))?;
+        )))
+        .map_into(
+            ErrorKind::UnexpectedToken {
+                found: self.next_token().to_string(),
+                expected: "IF NOT EXISTS".to_string(),
+            },
+            self.start_offset(),
+        )?;
 
-        let (index_name, table_name): (Option<&str>, &str) =
-            self.parser(alt((
+        let (index_name, table_name): (Option<&str>, &str) = self
+            .parser(alt((
                 (
                     opt(terminated(parse_ident, parse_comment1)),
                     preceded((tag_no_case("ON"), parse_comment1), parse_ident),
@@ -740,93 +781,140 @@ impl<'a> Lexer<'a> {
                     opt(recognize(not(is_not("")))),
                     preceded((tag_no_case("ON"), parse_comment1), parse_ident),
                 ),
-            )))?;
+            )))
+            .map_into(
+                ErrorKind::UnexpectedToken {
+                    found: self.next_token().to_string(),
+                    expected: "index_name ON table_name".to_string(),
+                },
+                self.start_offset(),
+            )?;
 
-        self.parser(parse_comment1)?;
+        self.parser(parse_comment1).map_into(
+            ErrorKind::NonWhitespace(self.next_token().to_string()),
+            self.start_offset(),
+        )?;
 
-        let (idx_method, mut index_method) = self.pg_parse_index_method()?;
+        let (idx_method, mut index_method) =
+            self.pg_parse_index_method().map_into(
+                ErrorKind::UnexpectedToken {
+                    found: self.next_token().to_string(),
+                    expected: "index method (USING ...)".to_string(),
+                },
+                self.start_offset(),
+            )?;
 
-        self.parser(parse_comment1)?;
+        self.parser(parse_comment1).map_into(
+            ErrorKind::NonWhitespace(self.next_token().to_string()),
+            self.start_offset(),
+        )?;
 
-        let cols = self.parser(delimited(
-            (tag("("), parse_comment0),
-            separated_list1(
-                (parse_comment0, tag(","), parse_comment0),
-                map_res(
-                    (
-                        alt((
-                            recognize((
-                                many0(alt((alphanumeric1, tag("_")))),
-                                delimited(
-                                    (parse_comment0, tag("("), parse_comment0),
-                                    parse_ident,
-                                    (parse_comment0, tag("(")),
-                                ),
-                            )),
-                            parse_ident,
-                        )),
-                        opt(preceded(parse_comment1, parse_ident)),
-                        opt(preceded(
-                            parse_comment1,
+        let cols = self
+            .parser(delimited(
+                (tag("("), parse_comment0),
+                separated_list1(
+                    (parse_comment0, tag(","), parse_comment0),
+                    map_res(
+                        (
                             alt((
-                                value(IndexSortOrder::Asc, tag_no_case("ASC")),
-                                value(
-                                    IndexSortOrder::Desc,
-                                    tag_no_case("DESC"),
-                                ),
-                            )),
-                        )),
-                        opt(preceded(
-                            parse_comment1,
-                            alt((
-                                value(
-                                    IndexNullOrder::NullsFirst,
-                                    (
-                                        tag_no_case("NULLS"),
-                                        parse_comment1,
-                                        tag_no_case("FIRST"),
+                                recognize((
+                                    many0(alt((alphanumeric1, tag("_")))),
+                                    delimited(
+                                        (
+                                            parse_comment0,
+                                            tag("("),
+                                            parse_comment0,
+                                        ),
+                                        parse_ident,
+                                        (parse_comment0, tag("(")),
                                     ),
-                                ),
-                                value(
-                                    IndexNullOrder::NullsLast,
-                                    (
-                                        tag_no_case("NULLS"),
-                                        parse_comment1,
-                                        tag_no_case("LAST"),
-                                    ),
-                                ),
+                                )),
+                                parse_ident,
                             )),
-                        )),
+                            opt(preceded(parse_comment1, parse_ident)),
+                            opt(preceded(
+                                parse_comment1,
+                                alt((
+                                    value(
+                                        IndexSortOrder::Asc,
+                                        tag_no_case("ASC"),
+                                    ),
+                                    value(
+                                        IndexSortOrder::Desc,
+                                        tag_no_case("DESC"),
+                                    ),
+                                )),
+                            )),
+                            opt(preceded(
+                                parse_comment1,
+                                alt((
+                                    value(
+                                        IndexNullOrder::NullsFirst,
+                                        (
+                                            tag_no_case("NULLS"),
+                                            parse_comment1,
+                                            tag_no_case("FIRST"),
+                                        ),
+                                    ),
+                                    value(
+                                        IndexNullOrder::NullsLast,
+                                        (
+                                            tag_no_case("NULLS"),
+                                            parse_comment1,
+                                            tag_no_case("LAST"),
+                                        ),
+                                    ),
+                                )),
+                            )),
+                        ),
+                        |(name, opclass, sort1, sort2)| {
+                            Ok::<
+                                (&str, SqlIndexColumn),
+                                nom::Err<nom::error::Error<&str>>,
+                            >((
+                                name,
+                                SqlIndexColumn {
+                                    name: index_name.map(String::from),
+                                    opclass: opclass.map(String::from),
+                                    sort_order: sort1,
+                                    null_order: sort2,
+                                    method: index_method,
+                                    is_concurrent,
+                                    is_unique,
+                                    included_cols: None,
+                                    predicate: None,
+                                },
+                            ))
+                        },
                     ),
-                    |(name, opclass, sort1, sort2)| {
-                        Ok::<
-                            (&str, SqlIndexColumn),
-                            nom::Err<nom::error::Error<&str>>,
-                        >((
-                            name,
-                            SqlIndexColumn {
-                                name: index_name.map(String::from),
-                                opclass: opclass.map(String::from),
-                                sort_order: sort1,
-                                null_order: sort2,
-                                method: index_method,
-                                is_concurrent,
-                                is_unique,
-                                included_cols: None,
-                                predicate: None,
-                            },
-                        ))
-                    },
                 ),
-            ),
-            (parse_comment0, tag(")")),
-        ))?;
+                (parse_comment0, tag(")")),
+            ))
+            .map_into(
+                ErrorKind::UnexpectedToken {
+                    found: self.next_token().to_string(),
+                    expected: "index columns".to_string(),
+                },
+                self.start_offset(),
+            )?;
 
-        let included = self.pg_parse_include()?;
+        let included = self.pg_parse_include().map_into(
+            ErrorKind::UnexpectedToken {
+                found: self.next_token().to_string(),
+                expected: "INCLUDE clause".to_string(),
+            },
+            self.start_offset(),
+        )?;
 
         self.pg_apply_with_params(&mut index_method, idx_method)?;
 
-        let predicate = self.pg_parse_where()?;
+        let predicate = self.pg_parse_where().map_into(
+            ErrorKind::UnexpectedToken {
+                found: self.next_token().to_string(),
+                expected: "WHERE clause".to_string(),
+            },
+            self.start_offset(),
+        )?;
 
         Ok(Created::Index { table_name, columns: cols, included, predicate })
     }
@@ -834,10 +922,18 @@ impl<'a> Lexer<'a> {
     fn pg_parse_index_method(
         &mut self,
     ) -> Result<(Option<&'a str>, Option<IndexMethod>)> {
-        let idx_method = self.parser(opt(preceded(
-            (tag_no_case("USING"), parse_comment1),
-            alphanumeric1,
-        )))?;
+        let idx_method = self
+            .parser(opt(preceded(
+                (tag_no_case("USING"), parse_comment1),
+                alphanumeric1,
+            )))
+            .map_into(
+                ErrorKind::UnexpectedToken {
+                    found: self.next_token().to_string(),
+                    expected: "index method name".to_string(),
+                },
+                self.start_offset(),
+            )?;
 
         let index_method =
             idx_method.map(|s: &str| match s.to_uppercase().as_str() {
@@ -882,6 +978,13 @@ impl<'a> Lexer<'a> {
                 (parse_comment0, tag(")")),
             ),
         )))
+        .map_into(
+            ErrorKind::UnexpectedToken {
+                found: self.next_token().to_string(),
+                expected: "INCLUDE clause".to_string(),
+            },
+            self.start_offset(),
+        )
     }
 
     fn pg_apply_with_params(
@@ -889,21 +992,29 @@ impl<'a> Lexer<'a> {
         index_method: &mut Option<IndexMethod>,
         idx_method: Option<&str>,
     ) -> Result<()> {
-        let pairs = self.parser(opt(preceded(
-            (parse_comment1, tag_no_case("WITH"), parse_comment0),
-            delimited(
-                (tag("("), parse_comment0),
-                separated_list1(
-                    (parse_comment0, tag(","), parse_comment0),
-                    separated_pair(
-                        parse_ident,
-                        (parse_comment0, tag("="), parse_comment0),
-                        alphanumeric1,
+        let pairs = self
+            .parser(opt(preceded(
+                (parse_comment1, tag_no_case("WITH"), parse_comment0),
+                delimited(
+                    (tag("("), parse_comment0),
+                    separated_list1(
+                        (parse_comment0, tag(","), parse_comment0),
+                        separated_pair(
+                            parse_ident,
+                            (parse_comment0, tag("="), parse_comment0),
+                            alphanumeric1,
+                        ),
                     ),
+                    (parse_comment0, tag(")")),
                 ),
-                (parse_comment0, tag(")")),
-            ),
-        )))?;
+            )))
+            .map_into(
+                ErrorKind::UnexpectedToken {
+                    found: self.next_token().to_string(),
+                    expected: "WITH clause".to_string(),
+                },
+                self.start_offset(),
+            )?;
 
         if pairs.is_some() {
             idx_method.ok_or(Error::new(
@@ -918,7 +1029,14 @@ impl<'a> Lexer<'a> {
         for (key, value) in pairs.unwrap_or(vec![]) {
             let res = match key.to_lowercase().as_str() {
                 "fillfactor" => {
-                    let v = value.parse()?;
+                    let v = value.parse::<u8>().map_err(|_| {
+                        Error::new(
+                            ErrorKind::ParseFailure(
+                                "invalid fillfactor value".into(),
+                            ),
+                            self.start_offset(),
+                        )
+                    })?;
                     let mut r = Ok(());
                     index_method.as_mut().map(|m| {
                         r = m.set_fillfactor(v);
@@ -928,7 +1046,14 @@ impl<'a> Lexer<'a> {
                 }
 
                 "fastupdate" => {
-                    let v = value.parse()?;
+                    let v = value.parse::<bool>().map_err(|_| {
+                        Error::new(
+                            ErrorKind::ParseFailure(
+                                "invalid fastupdate value".into(),
+                            ),
+                            self.start_offset(),
+                        )
+                    })?;
                     let mut r = Ok(());
                     index_method.as_mut().map(|m| {
                         r = m.set_fastupdate(v);
@@ -938,7 +1063,14 @@ impl<'a> Lexer<'a> {
                 }
 
                 "gin_pending_list_limit" => {
-                    let v = value.parse()?;
+                    let v = value.parse::<u32>().map_err(|_| {
+                        Error::new(
+                            ErrorKind::ParseFailure(
+                                "invalid gin_pending_list_limit value".into(),
+                            ),
+                            self.start_offset(),
+                        )
+                    })?;
                     let mut r = Ok(());
                     index_method.as_mut().map(|m| {
                         r = m.set_gin_pending_list_limit(v);
@@ -989,7 +1121,14 @@ impl<'a> Lexer<'a> {
                 }
 
                 "pages_per_range" => {
-                    let v = value.parse()?;
+                    let v = value.parse::<u32>().map_err(|_| {
+                        Error::new(
+                            ErrorKind::ParseFailure(
+                                "invalid pages_per_range value".into(),
+                            ),
+                            self.start_offset(),
+                        )
+                    })?;
                     let mut r = Ok(());
                     index_method.as_mut().map(|m| {
                         r = m.set_pages_per_range(v);
@@ -1016,30 +1155,38 @@ impl<'a> Lexer<'a> {
     }
 
     fn pg_parse_where(&mut self) -> Result<Option<String>> {
-        let out = self.parser(opt(preceded(
-            (parse_comment1, tag_no_case("WHERE"), parse_comment1),
-            recognize(many1(alt((
-                recognize(delimited(
-                    tag("'"),
-                    many0(alt((
-                        tag("\\'"),
-                        tag("''"),
-                        recognize(none_of("'")),
-                    ))),
-                    tag("'"),
-                )),
-                recognize(delimited(
-                    tag("\""),
-                    many0(alt((
-                        tag("\\\""),
-                        tag("\"\""),
-                        recognize(none_of("\"")),
-                    ))),
-                    tag("\""),
-                )),
-                is_not(";'\""),
-            )))),
-        )))?;
+        let out = self
+            .parser(opt(preceded(
+                (parse_comment1, tag_no_case("WHERE"), parse_comment1),
+                recognize(many1(alt((
+                    recognize(delimited(
+                        tag("'"),
+                        many0(alt((
+                            tag("\\'"),
+                            tag("''"),
+                            recognize(none_of("'")),
+                        ))),
+                        tag("'"),
+                    )),
+                    recognize(delimited(
+                        tag("\""),
+                        many0(alt((
+                            tag("\\\""),
+                            tag("\"\""),
+                            recognize(none_of("\"")),
+                        ))),
+                        tag("\""),
+                    )),
+                    is_not(";'\""),
+                )))),
+            )))
+            .map_into(
+                ErrorKind::UnexpectedToken {
+                    found: self.next_token().to_string(),
+                    expected: "WHERE clause".to_string(),
+                },
+                self.start_offset(),
+            )?;
 
         Ok(out.map(|s| s.trim().to_string()))
     }
@@ -1053,8 +1200,18 @@ impl<'a> Lexer<'a> {
     ) -> Result<T> {
         let (input, out) = match parser.parse(self.statements) {
             Ok(ok) => Ok(ok),
-            Err(_) => {
-                Err(Error::new(ErrorKind::UnexpectedEOF, self.orig.len()))
+            Err(nom::Err::Error(_)) | Err(nom::Err::Failure(_)) => {
+                let found = self.next_token().to_string();
+                Err(Error::new(
+                    ErrorKind::UnexpectedToken {
+                        found,
+                        expected: "valid SQL syntax".into(),
+                    },
+                    self.start_offset(),
+                ))
+            }
+            Err(nom::Err::Incomplete(_)) => {
+                Err(Error::new(ErrorKind::UnexpectedEOF, self.start_offset()))
             }
         }?;
 

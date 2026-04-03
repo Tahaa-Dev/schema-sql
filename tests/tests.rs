@@ -98,7 +98,13 @@ fn test_invalid() {
 
     assert_eq!(
         unsafe { res.unwrap_err_unchecked() },
-        schema_sql::error::Error::new(ErrorKind::UnexpectedEOF, 38)
+        schema_sql::error::Error::new(
+            ErrorKind::UnexpectedToken {
+                found: "ON".to_string(),
+                expected: "column definitions".to_string()
+            },
+            26
+        )
     );
 }
 
