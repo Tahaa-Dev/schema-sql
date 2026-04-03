@@ -98,13 +98,7 @@ fn test_invalid() {
 
     assert_eq!(
         unsafe { res.unwrap_err_unchecked() },
-        schema_sql::error::Error::new(
-            ErrorKind::UnexpectedToken {
-                found: "ON".into(),
-                expected: "<KEYWORD>".into()
-            },
-            "ON users WITH"
-        )
+        schema_sql::error::Error::new(ErrorKind::UnexpectedEOF, 38)
     );
 }
 
@@ -122,7 +116,7 @@ fn test_invalid_fk_missing_table() {
                 "users".to_string(),
                 schema_sql::error::IdentType::Table
             ),
-            "CREATE TABLE IF NOT EXISTS purchases (user_id UUID PRIMARY KEY REFERENCES users(id));"
+            75
         )
     )
 }
@@ -138,9 +132,8 @@ CREATE TABLE IF NOT EXISTS purchases (user_id UUID PRIMARY KEY REFERENCES users)
     assert_eq!(
         unsafe { res.unwrap_err_unchecked() },
         schema_sql::error::Error::new(
-            ErrorKind::MissingPrimaryKey("users".to_string(),),
-            r#"CREATE TABLE IF NOT EXISTS users (id UUID);
-CREATE TABLE IF NOT EXISTS purchases (user_id UUID PRIMARY KEY REFERENCES users);"#,
+            ErrorKind::MissingPrimaryKey("users".to_string()),
+            119
         )
     )
 }
@@ -160,8 +153,7 @@ CREATE TABLE IF NOT EXISTS purchases (user_id UUID PRIMARY KEY REFERENCES users(
                 "id".to_string(),
                 schema_sql::error::IdentType::Column
             ),
-            r#"CREATE TABLE IF NOT EXISTS users (name TEXT);
-CREATE TABLE IF NOT EXISTS purchases (user_id UUID PRIMARY KEY REFERENCES users(id));"#,
+            127
         )
     )
 }
@@ -181,8 +173,7 @@ CREATE TABLE IF NOT EXISTS purchases (user_id UUID PRIMARY KEY, FOREIGN KEY (use
                 "id".to_string(),
                 schema_sql::error::IdentType::Column
             ),
-            r#"CREATE TABLE IF NOT EXISTS users (name TEXT);
-CREATE TABLE IF NOT EXISTS purchases (user_id UUID PRIMARY KEY, FOREIGN KEY (user_id) REFERENCES users(id));"#,
+            150
         )
     )
 }

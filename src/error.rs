@@ -5,35 +5,46 @@ use std::{
 
 use nom::error::{ErrorKind as NomEk, ParseError as NomParseError};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Error {
     pub kind: ErrorKind,
-    pub context: String,
+    pub position: usize,
 }
 
 impl Error {
-    pub fn new(kind: ErrorKind, context: impl Into<String>) -> Self {
-        Self { kind, context: context.into() }
+    pub fn new(kind: ErrorKind, position: usize) -> Self {
+        Self { kind, position }
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub enum ErrorKind {
     InvalidCommand(String),
-    UnexpectedToken { found: String, expected: String },
-    UnexpectedEOF,
+    UnexpectedToken {
+        found: String,
+        expected: String,
+    },
     InvalidSyntax(String),
     ParseFailure(String),
     DuplicateIdent(String, IdentType),
     MissingIdent(String, IdentType),
     MissingPrimaryKey(String),
-    InvalidForeignKey { table: String, column: Option<String> },
+    InvalidForeignKey {
+        table: String,
+        column: Option<String>,
+    },
     DuplicateConstraint(String),
     InvalidConstraint(String),
     InvalidIndexMethod(String),
-    InvalidStorageParam { key: String, value: String },
+    InvalidStorageParam {
+        key: String,
+        value: String,
+    },
     InvalidValue(String),
-    Unknown(String),
+    NonWhitespace(String),
+    #[default]
+    Unknown,
+    UnexpectedEOF,
 }
 
 #[derive(PartialEq, Debug, Clone, Copy)]
@@ -100,10 +111,13 @@ impl std::fmt::Display for Error {
             ErrorKind::InvalidStorageParam { key, value } => {
                 write!(f, "Invalid storage parameter '{}' = '{}'", key, value)
             }
-            ErrorKind::Unknown(s) => write!(f, "Unknown error: {}", s),
+            ErrorKind::NonWhitespace(s) => {
+                write!(f, "Expected whitespace\nFound: {}", s)
+            }
+            ErrorKind::Unknown => write!(f, "Unknown error"),
         }?;
 
-        write!(f, "\nContext:\n  {}", self.context)?;
+        write!(f, "\nAt byte: {} in input SQL", self.position)?;
 
         Ok(())
     }
@@ -118,11 +132,7 @@ impl<'a> NomParseError<&'a str> for Error {
             | NomEk::Eof => ErrorKind::UnexpectedEOF,
 
             NomEk::Tag => ErrorKind::UnexpectedToken {
-                found: input
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or_default()
-                    .to_string(),
+                found: input.next_token().to_string(),
                 expected: "<KEYWORD>".into(),
             },
 
@@ -131,20 +141,12 @@ impl<'a> NomParseError<&'a str> for Error {
             }
 
             NomEk::AlphaNumeric | NomEk::Alpha => ErrorKind::UnexpectedToken {
-                found: input
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or_default()
-                    .to_string(),
+                found: input.next_token().to_string(),
                 expected: "<IDENTIFIER>".into(),
             },
 
             NomEk::Digit => ErrorKind::UnexpectedToken {
-                found: input
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or_default()
-                    .to_string(),
+                found: input.next_token().to_string(),
                 expected: "<NUMBER>".into(),
             },
 
@@ -152,35 +154,14 @@ impl<'a> NomParseError<&'a str> for Error {
                 ErrorKind::DuplicateIdent(input.into(), IdentType::Column)
             }
 
-            _ => ErrorKind::Unknown(input.into()),
+            _ => ErrorKind::Unknown,
         };
 
-        Self::new(error_kind, input.to_string())
+        Self::new(error_kind, 0)
     }
 
-    fn append(input: &'a str, _kind: NomEk, mut other: Self) -> Self {
-        other.context.push_str(input);
+    fn append(_: &'a str, _kind: NomEk, other: Self) -> Self {
         other
-    }
-}
-
-impl From<nom::Err<Error>> for Error {
-    fn from(e: nom::Err<Error>) -> Self {
-        match e {
-            nom::Err::Incomplete(_) => Self::new(ErrorKind::UnexpectedEOF, ""),
-            nom::Err::Error(e) | nom::Err::Failure(e) => e,
-        }
-    }
-}
-
-impl<'a> From<nom::Err<nom::error::Error<&'a str>>> for Error {
-    fn from(e: nom::Err<nom::error::Error<&'a str>>) -> Self {
-        match e {
-            nom::Err::Incomplete(_) => Self::new(ErrorKind::UnexpectedEOF, ""),
-            nom::Err::Error(e) | nom::Err::Failure(e) => {
-                Self::from_error_kind(e.input, e.code)
-            }
-        }
     }
 }
 
@@ -193,35 +174,39 @@ impl From<ParseIntError> for Error {
             IntErrorKind::NegOverflow => "number too small",
             _ => "invalid number",
         };
-        Self::new(
-            ErrorKind::ParseFailure(msg.into()),
-            value.to_string().as_str(),
-        )
+        Self::new(ErrorKind::ParseFailure(msg.into()), 0)
     }
 }
 
 impl From<ParseBoolError> for Error {
-    fn from(value: ParseBoolError) -> Self {
-        Self::new(
-            ErrorKind::ParseFailure("invalid boolean value".into()),
-            value.to_string().as_str(),
-        )
+    fn from(_: ParseBoolError) -> Self {
+        Self::new(ErrorKind::ParseFailure("invalid boolean value".into()), 0)
     }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub(crate) trait ParserExt<T> {
-    fn map_into(self, kind: ErrorKind, ctx: impl Into<String>) -> Result<T>;
+    fn map_into(self, kind: ErrorKind, position: usize) -> Result<T>;
 }
 
 impl<'a, T, E: NomParseError<&'a str>> ParserExt<T>
     for std::result::Result<T, E>
 {
-    fn map_into(self, kind: ErrorKind, ctx: impl Into<String>) -> Result<T> {
+    fn map_into(self, kind: ErrorKind, position: usize) -> Result<T> {
         match self {
             Ok(ok) => Ok(ok),
-            Err(_) => Err(Error::new(kind, ctx)),
+            Err(_) => Err(Error::new(kind, position)),
         }
+    }
+}
+
+pub(crate) trait StrExt<'a> {
+    fn next_token(&'a self) -> &'a str;
+}
+
+impl<'a> StrExt<'a> for str {
+    fn next_token(&'a self) -> &'a str {
+        self.split_whitespace().next().unwrap_or_default()
     }
 }

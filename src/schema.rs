@@ -4,7 +4,7 @@ use crate::{
 };
 use hashbrown::HashMap;
 use indexmap::IndexMap;
-use nom::bytes::complete::tag;
+use nom::{Offset, bytes::complete::tag};
 
 pub type ColMap = IndexMap<String, SqlColumn>;
 pub type TableMap = HashMap<String, SqlTable>;
@@ -21,11 +21,14 @@ pub struct SqlDB {
 }
 
 impl SqlDB {
-    pub fn from_sql(db: SupportedDBs, statements: &str) -> Result<Self> {
+    pub fn from_sql(
+        db: SupportedDBs,
+        statements: impl AsRef<str>,
+    ) -> Result<Self> {
+        let statements = statements.as_ref();
         let mut tables = TableMap::new();
-        let mut prev = String::new();
 
-        let mut lexer = Lexer { db, statements, fks: vec![] };
+        let mut lexer = Lexer { db, statements, fks: vec![], orig: statements };
 
         loop {
             lexer.parser(parse_comment0)?;
@@ -34,23 +37,24 @@ impl SqlDB {
                 break;
             }
 
-            let (created, statement) = lexer.parse_statement()?;
-            prev.push_str(statement);
+            let created = lexer.parse_statement()?;
 
             match created {
                 Created::Table { name, columns, primary_key } => {
-                    if tables.contains_key(&name) {
+                    if tables
+                        .insert(
+                            name.to_string(),
+                            SqlTable { columns, primary_key },
+                        )
+                        .is_some()
+                    {
                         return Err(Error::new(
-                            ErrorKind::DuplicateIdent(name, IdentType::Table),
-                            prev,
+                            ErrorKind::DuplicateIdent(
+                                name.to_string(),
+                                IdentType::Table,
+                            ),
+                            statements.offset(name) + 1,
                         ));
-                    } else {
-                        unsafe {
-                            tables.insert_unique_unchecked(
-                                name,
-                                SqlTable { columns, primary_key },
-                            )
-                        };
                     }
                 }
 
@@ -62,27 +66,29 @@ impl SqlDB {
                                     table_name.to_string(),
                                     IdentType::Table,
                                 ),
-                                &prev,
+                                statements.offset(table_name) + 1,
                             )
                         })?;
 
                     if let Some(ref included) = included {
-                        let mut col = &String::new();
+                        let mut col = "";
 
                         if included.iter().any(|column| {
                             col = column;
-                            !table.columns.contains_key(column)
+                            !table.columns.contains_key(*column)
                         }) {
                             return Err(Error::new(
                                 ErrorKind::MissingIdent(
-                                    col.clone(),
+                                    col.to_string(),
                                     IdentType::Column,
                                 ),
-                                statement,
+                                statements.offset(col) + 1,
                             ));
                         }
                     }
 
+                    let included = included
+                        .map(|v| v.iter().map(|s| s.to_string()).collect());
                     for (col_name, mut index) in columns {
                         index.included_cols = included.clone();
                         index.predicate = predicate.clone();
@@ -96,7 +102,7 @@ impl SqlDB {
                                         col_name.to_string(),
                                         IdentType::Column,
                                     ),
-                                    statement,
+                                    statements.offset(col_name) + 1,
                                 )
                             })?
                             .index = Some(index);
@@ -120,13 +126,13 @@ impl SqlDB {
                                 column.to_string(),
                                 IdentType::Column,
                             ),
-                            statements,
+                            statements.offset(column) + 1,
                         ));
                     }
                 } else if table_cols.primary_key.is_none() {
                     return Err(Error::new(
                         ErrorKind::MissingPrimaryKey(table.to_string()),
-                        statements,
+                        statements.offset(table) + 1,
                     ));
                 }
             } else {
@@ -135,7 +141,7 @@ impl SqlDB {
                         table.to_string(),
                         IdentType::Table,
                     ),
-                    statements,
+                    statements.offset(table) + 1,
                 ));
             }
         }

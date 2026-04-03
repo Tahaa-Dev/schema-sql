@@ -4,8 +4,8 @@
 
 use crate::{
     ColMap, Error, ErrorKind, FkAction, ForeignKey, GistBufMode, IndexMethod,
-    IndexNullOrder, IndexSortOrder, IntervalField, Result, SqlColumn,
-    SqlIndexColumn, SqlType, SupportedDBs,
+    IndexNullOrder, IndexSortOrder, IntervalField, ParserExt, Result,
+    SqlColumn, SqlIndexColumn, SqlType, StrExt, SupportedDBs,
 };
 
 use nom::{
@@ -28,24 +28,38 @@ pub(crate) struct Lexer<'a> {
         &'a str,         // referenced table
         Option<&'a str>, // referenced column
     )>,
+    pub(crate) orig: &'a str, // original statements for error reporting
 }
 
 impl<'a> Lexer<'a> {
-    pub(crate) fn parse_statement(&mut self) -> Result<(Created<'_>, &'a str)> {
-        let og_statements = self.statements;
-        self.parser(parse_comment0)?;
-        self.parser(tag_no_case("CREATE"))?;
-        self.parser(parse_comment1)?;
+    pub(crate) fn parse_statement(&mut self) -> Result<Created<'_>> {
+        // parse_comment0 cannot fail
+        self.parser(parse_comment0).map_into(ErrorKind::UnexpectedEOF, 0)?;
 
-        let output = self.parser(alt((
-            tag_no_case("TABLE"),
-            recognize((
-                opt((tag_no_case("UNIQUE"), parse_comment1)),
-                tag_no_case("INDEX"),
-            )),
-        )))?;
+        let create = self.parser(tag_no_case("CREATE")).map_into(
+            ErrorKind::InvalidCommand(self.next_token().to_string()),
+            self.start_offset(),
+        )?;
+        self.parser(parse_comment1).map_into(
+            ErrorKind::NonWhitespace(create.to_string()),
+            self.start_offset(),
+        )?;
 
-        let og = &og_statements[..og_statements.offset(self.statements)];
+        let output = self
+            .parser(alt((
+                tag_no_case("TABLE"),
+                recognize((
+                    opt((tag_no_case("UNIQUE"), parse_comment1)),
+                    tag_no_case("INDEX"),
+                )),
+            )))
+            .map_into(
+                ErrorKind::UnexpectedToken {
+                    found: self.next_token().to_string(),
+                    expected: "TABLE/[UNIQUE] INDEX".to_string(),
+                },
+                self.start_offset(),
+            )?;
 
         let output = output.to_uppercase();
 
@@ -53,7 +67,6 @@ impl<'a> Lexer<'a> {
             "TABLE" => self.pg_parse_table(),
             _ => self.pg_parse_index(output.starts_with("UNIQUE")),
         }
-        .map(|c| (c, og))
     }
 
     fn pg_parse_table(&mut self) -> Result<Created<'_>> {
@@ -61,7 +74,11 @@ impl<'a> Lexer<'a> {
         let mut primary_key: Option<String> = None;
         let mut fks = vec![];
 
-        self.parser(parse_comment1)?;
+        self.parser(parse_comment1).map_into(
+            ErrorKind::NonWhitespace(self.next_token().to_string()),
+            self.start_offset(),
+        )?;
+
         self.parser(opt((
             tag_no_case("IF"),
             parse_comment1,
@@ -294,11 +311,7 @@ impl<'a> Lexer<'a> {
 
         self.fks.extend_from_slice(&fks);
 
-        Ok(Created::Table {
-            name: table_name.to_string(),
-            columns,
-            primary_key,
-        })
+        Ok(Created::Table { name: table_name, columns, primary_key })
     }
 
     fn pg_parse_fkaction(input: &str) -> IResult<&str, Constraint<'a>> {
@@ -850,25 +863,21 @@ impl<'a> Lexer<'a> {
                 ErrorKind::InvalidIndexMethod(
                     unsafe { idx_method.unwrap_unchecked() }.to_string(),
                 ),
-                self.statements,
+                self.start_offset(),
             ));
         }
 
         Ok((idx_method, index_method))
     }
 
-    fn pg_parse_include(&mut self) -> Result<Option<Vec<String>>> {
+    fn pg_parse_include(&mut self) -> Result<Option<Vec<&'a str>>> {
         self.parser(opt(preceded(
             (parse_comment1, tag_no_case("INCLUDE"), parse_comment0),
             delimited(
                 (tag("("), parse_comment0),
                 separated_list1(
                     (parse_comment0, tag(","), parse_comment0),
-                    map_res(parse_ident, |s: &'a str| {
-                        Ok::<String, nom::Err<nom::error::Error<&str>>>(
-                            s.to_string(),
-                        )
-                    }),
+                    parse_ident,
                 ),
                 (parse_comment0, tag(")")),
             ),
@@ -902,7 +911,7 @@ impl<'a> Lexer<'a> {
                     expected: self.statements.into(),
                     found: "INDEX METHOD".into(),
                 },
-                self.statements,
+                self.start_offset(),
             ))?;
         }
 
@@ -946,7 +955,7 @@ impl<'a> Lexer<'a> {
                         _ => {
                             return Err(Error::new(
                                 ErrorKind::InvalidValue(value.to_string()),
-                                self.statements,
+                                self.start_offset(),
                             ));
                         }
                     };
@@ -966,7 +975,7 @@ impl<'a> Lexer<'a> {
                         _ => {
                             return Err(Error::new(
                                 ErrorKind::InvalidValue(value.to_string()),
-                                self.statements,
+                                self.start_offset(),
                             ));
                         }
                     };
@@ -998,7 +1007,7 @@ impl<'a> Lexer<'a> {
                         key: key.to_string(),
                         value: value.to_string(),
                     },
-                    self.statements,
+                    self.start_offset(),
                 )
             })?;
         }
@@ -1042,11 +1051,24 @@ impl<'a> Lexer<'a> {
         &mut self,
         mut parser: F,
     ) -> Result<T> {
-        let (input, out) = parser.parse(self.statements)?;
+        let (input, out) = match parser.parse(self.statements) {
+            Ok(ok) => Ok(ok),
+            Err(_) => {
+                Err(Error::new(ErrorKind::UnexpectedEOF, self.orig.len()))
+            }
+        }?;
 
         self.statements = input;
 
         Ok(out)
+    }
+
+    pub(crate) fn next_token(&self) -> &str {
+        self.statements.next_token()
+    }
+
+    pub(crate) fn start_offset(&self) -> usize {
+        self.orig.offset(self.statements) + 1
     }
 }
 
@@ -1087,9 +1109,10 @@ pub(crate) fn parse_comment1(input: &str) -> IResult<&str, &str> {
     Ok((input, ""))
 }
 
+#[derive(Debug, Clone)]
 pub(crate) enum Created<'a> {
     Table {
-        name: String,
+        name: &'a str,
         columns: ColMap,
         primary_key: Option<String>,
     },
@@ -1097,7 +1120,7 @@ pub(crate) enum Created<'a> {
     Index {
         table_name: &'a str,
         columns: Vec<(&'a str, SqlIndexColumn)>,
-        included: Option<Vec<String>>,
+        included: Option<Vec<&'a str>>,
         predicate: Option<String>,
     },
 }
@@ -1125,15 +1148,18 @@ mod tests {
 
     #[test]
     fn table_lexer_valid() {
-        let mut lexer = Lexer {
-            db: SupportedDBs::PostgreSQL,
-            statements: r#"CREATE table IF   NOT   EXISTS -- Make sure it's only created once
+        let statements = r#"CREATE table IF   NOT   EXISTS -- Make sure it's only created once
             users (
                 id UUID primary   key, /* Primary key Notes */
                 name TEXT,
                 time INTERVAL    DAY TO  SECOND 
-            )"#,
+            )"#;
+
+        let mut lexer = Lexer {
+            db: SupportedDBs::PostgreSQL,
+            statements,
             fks: vec![],
+            orig: statements,
         };
 
         lexer.parse_statement().unwrap();
@@ -1143,15 +1169,18 @@ mod tests {
 
     #[test]
     fn index_lexer_valid() {
-        let mut lexer2 = Lexer {
-            db: SupportedDBs::PostgreSQL,
-            statements: r#"CREATE InDex -- Note
+        let statements = r#"CREATE InDex -- Note
             IF NOT EXISTS user_id ON users USING BRIN (
                 id, /* Multi-line
                     Note */
                 name
-            )"#,
+            )"#;
+
+        let mut lexer2 = Lexer {
+            db: SupportedDBs::PostgreSQL,
+            statements,
             fks: vec![],
+            orig: statements,
         };
 
         lexer2.parse_statement().unwrap();
