@@ -1,6 +1,6 @@
 use schema_sql::{
-    FkAction, ForeignKey, IndexMethod, SqlDB, SqlType, SupportedDBs,
-    error::ErrorKind,
+    FkAction, ForeignKey, IndexMethod, PrimaryKey, SqlDB, SqlType,
+    SupportedDBs, error::ErrorKind,
 };
 
 #[test]
@@ -53,7 +53,7 @@ fn test_valid() {
         }
     });
 
-    assert_eq!(db.primary_key.as_deref(), Some("id"));
+    assert_eq!(db.primary_key, Some(PrimaryKey::Single("id".to_string())));
     assert_eq!(db.columns["id"].default.as_deref(), Some("gen_random_uuid()"));
     assert_eq!(
         db.columns["total_purchases"].check.as_deref(),
@@ -182,4 +182,112 @@ CREATE TABLE IF NOT EXISTS purchases (user_id UUID PRIMARY KEY, FOREIGN KEY (use
             150
         )
     )
+}
+
+#[test]
+fn test_valid_composite_pk() {
+    let sql = r#"
+        CREATE TABLE IF NOT EXISTS orders (
+            order_id UUID NOT NULL,
+            product_id UUID NOT NULL,
+            quantity INT,
+            PRIMARY KEY (order_id, product_id)
+        );
+    "#;
+
+    let db = SqlDB::from_sql(SupportedDBs::PostgreSQL, sql).unwrap();
+    let table = &db.tables["orders"];
+
+    assert_eq!(
+        table.primary_key,
+        Some(PrimaryKey::Composite(vec![
+            "order_id".to_string(),
+            "product_id".to_string()
+        ]))
+    );
+    assert_eq!(table.columns["order_id"].sql_type, SqlType::Uuid);
+    assert_eq!(table.columns["product_id"].sql_type, SqlType::Uuid);
+    assert_eq!(table.columns["quantity"].sql_type, SqlType::Integer);
+}
+
+#[test]
+fn test_valid_composite_pk_three_cols() {
+    let sql = r#"
+        CREATE TABLE inventory (
+            warehouse_id INT,
+            product_id INT,
+            batch TEXT,
+            quantity DECIMAL(10, 2),
+            PRIMARY KEY (warehouse_id, product_id, batch)
+        );
+    "#;
+
+    let db = SqlDB::from_sql(SupportedDBs::PostgreSQL, sql).unwrap();
+    let table = &db.tables["inventory"];
+
+    assert_eq!(
+        table.primary_key,
+        Some(PrimaryKey::Composite(vec![
+            "warehouse_id".to_string(),
+            "product_id".to_string(),
+            "batch".to_string()
+        ]))
+    );
+}
+
+#[test]
+fn test_invalid_composite_pk_missing_column() {
+    let res = SqlDB::from_sql(
+        SupportedDBs::PostgreSQL,
+        r#"CREATE TABLE orders (
+            order_id UUID,
+            PRIMARY KEY (order_id, missing_col)
+        );"#,
+    );
+
+    assert_eq!(
+        unsafe { res.unwrap_err_unchecked() },
+        schema_sql::error::Error::new(
+            ErrorKind::MissingIdent(
+                "missing_col".to_string(),
+                schema_sql::error::IdentType::Column
+            ),
+            84
+        )
+    )
+}
+
+#[test]
+fn test_valid_table_level_fk_with_composite_pk() {
+    let sql = r#"
+        CREATE TABLE IF NOT EXISTS users (
+            id UUID PRIMARY KEY,
+            name TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS orders (
+            order_id UUID,
+            user_id UUID,
+            amount DECIMAL(10, 2),
+            PRIMARY KEY (order_id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+    "#;
+
+    let db = SqlDB::from_sql(SupportedDBs::PostgreSQL, sql).unwrap();
+    let orders = &db.tables["orders"];
+
+    assert_eq!(
+        orders.primary_key,
+        Some(PrimaryKey::Composite(vec!["order_id".to_string()]))
+    );
+    assert_eq!(
+        orders.columns["user_id"].foreign_key,
+        Some(ForeignKey {
+            table: "users".to_string(),
+            column: Some("id".to_string()),
+            on_delete: None,
+            on_update: None
+        })
+    );
 }

@@ -4,8 +4,8 @@
 
 use crate::{
     ColMap, Error, ErrorKind, FkAction, ForeignKey, GistBufMode, IndexMethod,
-    IndexNullOrder, IndexSortOrder, IntervalField, ParserExt, Result,
-    SqlColumn, SqlIndexColumn, SqlType, StrExt, SupportedDBs,
+    IndexNullOrder, IndexSortOrder, IntervalField, ParserExt, PrimaryKey,
+    Result, SqlColumn, SqlIndexColumn, SqlType, StrExt, SupportedDBs,
 };
 
 use nom::{
@@ -72,7 +72,7 @@ impl<'a> Lexer<'a> {
 
     fn pg_parse_table(&mut self) -> Result<Created<'_>> {
         let mut columns = ColMap::new();
-        let mut primary_key: Option<String> = None;
+        let mut primary_key: Option<Pk> = None;
         let mut fks = vec![];
 
         self.parser(parse_comment1).map_into(
@@ -198,6 +198,33 @@ impl<'a> Lexer<'a> {
                 }
 
                 Ok((input, ()))
+            } else if peek(tag_no_case::<&str, &str, nom::error::Error<&str>>(
+                "PRIMARY",
+            ))
+            .parse(input)
+            .is_ok()
+            {
+                let (input, pks) = preceded(
+                    (
+                        tag_no_case("PRIMARY"),
+                        parse_comment1,
+                        tag_no_case("KEY"),
+                        parse_comment0,
+                    ),
+                    delimited(
+                        (tag("("), parse_comment0),
+                        separated_list1(
+                            (parse_comment0, tag(","), parse_comment0),
+                            parse_ident,
+                        ),
+                        tag(")"),
+                    ),
+                )
+                .parse(input)?;
+
+                primary_key = Some(Pk::Composite(pks));
+
+                Ok((input, ()))
             } else {
                 let (input, col_name) = parse_ident(input)?;
                 let (input, _) = parse_comment1(input)?;
@@ -235,7 +262,7 @@ impl<'a> Lexer<'a> {
                                 is_primary_key = true;
                                 not_null = true;
                                 index = Some(SqlIndexColumn::default());
-                                primary_key = Some(col_name.to_string());
+                                primary_key = Some(Pk::Single(col_name));
                             }
                         }
 
@@ -1271,7 +1298,7 @@ pub(crate) enum Created<'a> {
     Table {
         name: &'a str,
         columns: ColMap,
-        primary_key: Option<String>,
+        primary_key: Option<Pk<'a>>,
     },
 
     Index {
@@ -1280,6 +1307,22 @@ pub(crate) enum Created<'a> {
         included: Option<Vec<&'a str>>,
         predicate: Option<String>,
     },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum Pk<'a> {
+    Single(&'a str),
+    Composite(Vec<&'a str>),
+}
+impl<'a> Pk<'a> {
+    pub(crate) fn into_primary_key(self) -> PrimaryKey {
+        match self {
+            Self::Single(s) => PrimaryKey::Single(s.to_string()),
+            Self::Composite(v) => PrimaryKey::Composite(
+                v.into_iter().map(|s| s.to_string()).collect(),
+            ),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

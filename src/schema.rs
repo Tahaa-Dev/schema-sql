@@ -1,8 +1,8 @@
 use std::ops::{Index, IndexMut};
 
 use crate::{
-    Error, ErrorKind, IdentType, Result, SqlColumn, SupportedDBs,
-    lexer::{Created, Lexer, parse_comment0},
+    Error, ErrorKind, IdentType, PrimaryKey, Result, SqlColumn, SupportedDBs,
+    lexer::{Created, Lexer, Pk, parse_comment0},
 };
 use hashbrown::HashMap;
 use indexmap::IndexMap;
@@ -17,7 +17,11 @@ impl ColMap {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn insert(&mut self, key: String, value: SqlColumn) -> Option<SqlColumn> {
+    pub fn insert(
+        &mut self,
+        key: String,
+        value: SqlColumn,
+    ) -> Option<SqlColumn> {
         self.columns.insert(key, value)
     }
     pub fn get(&self, key: &str) -> Option<&SqlColumn> {
@@ -49,7 +53,7 @@ impl IndexMut<&str> for ColMap {
 pub struct SqlTable {
     pub columns: ColMap,
     #[allow(dead_code)]
-    pub primary_key: Option<String>,
+    pub primary_key: Option<PrimaryKey>,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -110,10 +114,35 @@ impl SqlDB {
 
             match created {
                 Created::Table { name, columns, primary_key } => {
+                    match &primary_key {
+                        Some(Pk::Single(_)) => {}
+                        Some(Pk::Composite(v)) => {
+                            let mut col = "";
+
+                            if v.iter().any(|s| {
+                                col = s;
+                                !columns.contains_key(s)
+                            }) {
+                                return Err(Error::new(
+                                    ErrorKind::MissingIdent(
+                                        col.to_string(),
+                                        IdentType::Column,
+                                    ),
+                                    statements.offset(col),
+                                ));
+                            }
+                        }
+                        _ => {}
+                    }
+
                     if tables
                         .insert(
                             name.to_string(),
-                            SqlTable { columns, primary_key },
+                            SqlTable {
+                                columns,
+                                primary_key: primary_key
+                                    .map(|pk| pk.into_primary_key()),
+                            },
                         )
                         .is_some()
                     {

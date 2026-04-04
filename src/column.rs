@@ -222,3 +222,9 @@ pub enum FkAction {
     SetNull,
     SetDefault,
 }
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PrimaryKey {
+    Single(String),
+    Composite(Vec<String>),
+}
