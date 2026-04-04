@@ -633,59 +633,55 @@ impl<'a> Lexer<'a> {
                     (tag_no_case("CHECK"), Self::parse_comment0),
                     Self::parse_parens.map(Constraint::Check),
                 ),
-                preceded(
-                    (tag_no_case("DEFAULT"), Self::parse_comment1),
-                    recognize(alt((
-                        delimited(
-                            tag("\""),
-                            alt((
-                                recognize(many0((
-                                    is_not("\\"),
-                                    tag("\\"),
-                                    anychar,
-                                ))),
-                                recognize(many0((
-                                    is_not("\""),
-                                    tag("\""),
-                                    char('"'),
-                                ))),
-                                is_not("\""),
-                            )),
-                            tag("\""),
-                        ),
-                        delimited(
-                            tag("'"),
-                            alt((
-                                recognize(many0((
-                                    is_not("\\"),
-                                    tag("\\"),
-                                    anychar,
-                                ))),
-                                recognize(many0((is_not("\'"), tag("''")))),
-                                is_not("'"),
-                            )),
-                            tag("'"),
-                        ),
-                        Self::parse_parens,
-                    )))
-                    .map(Constraint::Def),
-                ),
-                preceded(
-                    (tag_no_case("REFERENCES"), Self::parse_comment1),
-                    (
-                        Self::parse_ident,
-                        opt(delimited(
-                            (tag("("), Self::parse_comment0),
-                            Self::parse_ident,
-                            (Self::parse_comment0, tag(")")),
-                        )),
-                    )
-                        .map(|(table, col)| {
-                            Constraint::ForeignKey { table, col }
-                        }),
-                ),
+                Self::parse_default,
+                Self::pg_parse_inline_fk,
                 Self::pg_parse_fkaction,
             )),
+        )
+        .parse(input)
+    }
+
+    fn parse_default(input: &str) -> IResult<&str, Constraint<'_>> {
+        preceded(
+            (tag_no_case("DEFAULT"), Self::parse_comment1),
+            recognize(alt((
+                delimited(
+                    tag("\""),
+                    alt((
+                        recognize(many0((is_not("\\"), tag("\\"), anychar))),
+                        recognize(many0((is_not("\""), tag("\""), char('"')))),
+                        is_not("\""),
+                    )),
+                    tag("\""),
+                ),
+                delimited(
+                    tag("'"),
+                    alt((
+                        recognize(many0((is_not("\\"), tag("\\"), anychar))),
+                        recognize(many0((is_not("\'"), tag("''")))),
+                        is_not("'"),
+                    )),
+                    tag("'"),
+                ),
+                Self::parse_parens,
+            )))
+            .map(Constraint::Def),
+        )
+        .parse(input)
+    }
+
+    fn pg_parse_inline_fk(input: &str) -> IResult<&str, Constraint<'_>> {
+        preceded(
+            (tag_no_case("REFERENCES"), Self::parse_comment1),
+            (
+                Self::parse_ident,
+                opt(delimited(
+                    (tag("("), Self::parse_comment0),
+                    Self::parse_ident,
+                    (Self::parse_comment0, tag(")")),
+                )),
+            )
+                .map(|(table, col)| Constraint::ForeignKey { table, col }),
         )
         .parse(input)
     }
