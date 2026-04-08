@@ -74,6 +74,7 @@ impl<'a> Lexer<'a> {
         let mut columns = ColMap::new();
         let mut primary_key: Option<Pk> = None;
         let mut fks = vec![];
+        let mut check = None;
 
         self.parser(Self::parse_comment1).map_into(
             ErrorKind::NonWhitespace(self.next_token().to_string()),
@@ -137,6 +138,44 @@ impl<'a> Lexer<'a> {
                 primary_key = Some(Pk::Composite(pks));
 
                 Ok((input, ()))
+            } else if peek(tag_no_case::<&str, &str, nom::error::Error<&str>>(
+                "UNIQUE",
+            ))
+            .parse(input)
+            .is_ok()
+            {
+                let (input, cols) = preceded(
+                    (tag_no_case("UNIQUE"), Self::parse_comment0),
+                    Self::parse_list(Self::parse_ident),
+                )
+                .parse(input)?;
+
+                for col in cols {
+                    if let Some(col) = columns.get_mut(col) {
+                        col.index = Some(SqlIndexColumn::default());
+                    } else {
+                        return Err(nom::Err::Failure(nom::error::Error::new(
+                            input,
+                            nom::error::ErrorKind::NoneOf,
+                        )));
+                    }
+                }
+
+                Ok((input, ()))
+            } else if peek(tag_no_case::<&str, &str, nom::error::Error<&str>>(
+                "CHECK",
+            ))
+            .parse(input)
+            .is_ok()
+            {
+                let (input, constraint) = Self::pg_parse_constraint(input)?;
+
+                check = Some(match constraint {
+                    Constraint::Check(s) => s[1..s.len() - 1].to_string(),
+                    _ => unreachable!(),
+                });
+
+                Ok((input, ()))
             } else {
                 let (input, col_name) = Self::parse_ident(input)?;
                 let (input, _) = Self::parse_comment1(input)?;
@@ -157,8 +196,11 @@ impl<'a> Lexer<'a> {
                 let mut check = None;
                 let mut foreign_key: Option<ForeignKey> = None;
 
-                let (input, pk) =
-                    many0(Self::pg_parse_constraint).parse(input)?;
+                let (input, pk) = many0(preceded(
+                    Self::parse_comment1,
+                    Self::pg_parse_constraint,
+                ))
+                .parse(input)?;
 
                 for s in pk {
                     match s {
@@ -271,6 +313,7 @@ impl<'a> Lexer<'a> {
             columns,
             primary_key,
             if_not_exists,
+            check,
         })
     }
 
@@ -573,27 +616,24 @@ impl<'a> Lexer<'a> {
     pub(crate) fn pg_parse_constraint(
         input: &'a str,
     ) -> IResult<&'a str, Constraint<'a>> {
-        preceded(
-            Self::parse_comment1,
-            alt((
-                value(
-                    Constraint::PrimaryKey,
-                    (tag_no_case("PRIMARY"), multispace1, tag_no_case("KEY")),
-                ),
-                value(Constraint::Unique, tag_no_case("UNIQUE")),
-                value(
-                    Constraint::NotNull,
-                    (tag_no_case("NOT"), multispace1, tag_no_case("NULL")),
-                ),
-                preceded(
-                    (tag_no_case("CHECK"), Self::parse_comment0),
-                    Self::parse_parens.map(Constraint::Check),
-                ),
-                Self::parse_default,
-                Self::pg_parse_inline_fk,
-                Self::pg_parse_fkaction,
-            )),
-        )
+        alt((
+            value(
+                Constraint::PrimaryKey,
+                (tag_no_case("PRIMARY"), multispace1, tag_no_case("KEY")),
+            ),
+            value(Constraint::Unique, tag_no_case("UNIQUE")),
+            value(
+                Constraint::NotNull,
+                (tag_no_case("NOT"), multispace1, tag_no_case("NULL")),
+            ),
+            preceded(
+                (tag_no_case("CHECK"), Self::parse_comment0),
+                Self::parse_parens.map(Constraint::Check),
+            ),
+            Self::parse_default,
+            Self::pg_parse_inline_fk,
+            Self::pg_parse_fkaction,
+        ))
         .parse(input)
     }
 
@@ -1299,6 +1339,7 @@ pub(crate) enum Created<'a> {
         columns: ColMap,
         primary_key: Option<Pk<'a>>,
         if_not_exists: bool,
+        check: Option<String>,
     },
 
     Index {
@@ -1346,7 +1387,7 @@ pub(crate) enum Constraint<'a> {
 mod tests {
     use crate::{
         FkAction, IntervalField, SqlType, SupportedDBs, lexer::Constraint,
-        lexer::Lexer, lexer::OnEvent,
+        lexer::Created, lexer::Lexer, lexer::OnEvent,
     };
     use nom::Parser;
 
@@ -1614,28 +1655,28 @@ mod tests {
 
     #[test]
     fn parse_constraint_primary_key() {
-        let (rem, c) = Lexer::pg_parse_constraint(" PRIMARY KEY").unwrap();
+        let (rem, c) = Lexer::pg_parse_constraint("PRIMARY KEY").unwrap();
         assert!(matches!(c, Constraint::PrimaryKey));
         assert!(rem.is_empty());
     }
 
     #[test]
     fn parse_constraint_unique() {
-        let (rem, c) = Lexer::pg_parse_constraint(" UNIQUE").unwrap();
+        let (rem, c) = Lexer::pg_parse_constraint("UNIQUE").unwrap();
         assert!(matches!(c, Constraint::Unique));
         assert!(rem.is_empty());
     }
 
     #[test]
     fn parse_constraint_not_null() {
-        let (rem, c) = Lexer::pg_parse_constraint(" NOT NULL").unwrap();
+        let (rem, c) = Lexer::pg_parse_constraint("NOT NULL").unwrap();
         assert!(matches!(c, Constraint::NotNull));
         assert!(rem.is_empty());
     }
 
     #[test]
     fn parse_constraint_check() {
-        let (rem, c) = Lexer::pg_parse_constraint(" CHECK (x > 0)").unwrap();
+        let (rem, c) = Lexer::pg_parse_constraint("CHECK (x > 0)").unwrap();
         match c {
             Constraint::Check(s) => assert_eq!(s, "(x > 0)"),
             _ => panic!("expected Check constraint"),
@@ -2081,5 +2122,31 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].1, "user_id");
         assert_eq!(rem, "");
+    }
+
+    #[test]
+    fn table_level_unique_constraint() {
+        let input = "CREATE TABLE test (id INT, UNIQUE (id))";
+        let mut lexer = Lexer {
+            db: SupportedDBs::PostgreSQL,
+            statements: input,
+            fks: vec![],
+            orig: input,
+        };
+        let result = lexer.parse_statement().unwrap();
+        assert!(matches!(result, Created::Table { .. }));
+    }
+
+    #[test]
+    fn table_level_check_constraint() {
+        let input = "CREATE TABLE test (id INT, CHECK (id > 0))";
+        let mut lexer = Lexer {
+            db: SupportedDBs::PostgreSQL,
+            statements: input,
+            fks: vec![],
+            orig: input,
+        };
+        let result = lexer.parse_statement().unwrap();
+        assert!(matches!(result, Created::Table { .. }));
     }
 }

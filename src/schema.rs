@@ -55,6 +55,7 @@ pub struct SqlTable {
     pub columns: ColMap,
     pub primary_key: Option<PrimaryKey>,
     pub if_not_exists: bool,
+    pub check: Option<String>,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -119,6 +120,7 @@ impl SqlDB {
                     columns,
                     primary_key,
                     if_not_exists,
+                    check,
                 } => {
                     match &primary_key {
                         Some(Pk::Single(_)) => {}
@@ -149,6 +151,7 @@ impl SqlDB {
                                 primary_key: primary_key
                                     .map(|pk| pk.into_primary_key()),
                                 if_not_exists,
+                                check,
                             },
                         )
                         .is_some()
