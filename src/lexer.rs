@@ -787,14 +787,25 @@ impl<'a> Lexer<'a> {
             self.start_offset(),
         )?;
 
-        let (idx_method, mut index_method) =
-            self.pg_parse_index_method().map_into(
-                ErrorKind::UnexpectedToken {
-                    found: self.next_token().to_string(),
-                    expected: "index method (USING ...)".to_string(),
-                },
-                self.start_offset(),
-            )?;
+        let idx_method = self.parser(Self::pg_parse_index_method).map_into(
+            ErrorKind::UnexpectedToken {
+                found: self.next_token().to_string(),
+                expected: "index method name".to_string(),
+            },
+            self.start_offset(),
+        )?;
+
+        let (_, mut index_method) = Self::match_idx_method(idx_method)
+            .map_err(|_| {
+                Error::new(
+                    ErrorKind::InvalidIndexMethod(
+                        idx_method.unwrap_or_default().to_string(),
+                    ),
+                    idx_method
+                        .map(|s| self.orig.offset(s))
+                        .unwrap_or_else(|| self.start_offset()),
+                )
+            })?;
 
         self.parser(Self::parse_comment1).map_into(
             ErrorKind::NonWhitespace(self.next_token().to_string()),
@@ -854,21 +865,18 @@ impl<'a> Lexer<'a> {
     }
 
     pub(crate) fn pg_parse_index_method(
-        &mut self,
-    ) -> Result<(Option<&'a str>, Option<IndexMethod>)> {
-        let idx_method = self
-            .parser(opt(preceded(
-                (tag_no_case("USING"), Self::parse_comment1),
-                alphanumeric1,
-            )))
-            .map_into(
-                ErrorKind::UnexpectedToken {
-                    found: self.next_token().to_string(),
-                    expected: "index method name".to_string(),
-                },
-                self.start_offset(),
-            )?;
+        input: &str,
+    ) -> IResult<&str, Option<&str>> {
+        opt(preceded(
+            (tag_no_case("USING"), Self::parse_comment1),
+            alphanumeric1,
+        ))
+        .parse(input)
+    }
 
+    pub(crate) fn match_idx_method(
+        idx_method: Option<&str>,
+    ) -> IResult<&str, Option<IndexMethod>> {
         let index_method =
             idx_method.map(|s: &str| match s.to_uppercase().as_str() {
                 "BTREE" => IndexMethod::BTree { fillfactor: None },
@@ -889,15 +897,13 @@ impl<'a> Lexer<'a> {
             });
 
         if let Some(IndexMethod::Other) = index_method {
-            return Err(Error::new(
-                ErrorKind::InvalidIndexMethod(
-                    unsafe { idx_method.unwrap_unchecked() }.to_string(),
-                ),
-                self.start_offset(),
-            ));
+            return Err(nom::Err::Failure(nom::error::Error::new(
+                "",
+                nom::error::ErrorKind::Fail,
+            )));
         }
 
-        Ok((idx_method, index_method))
+        Ok(("", index_method))
     }
 
     pub(crate) fn parse_index_col(
