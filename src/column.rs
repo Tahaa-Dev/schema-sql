@@ -110,13 +110,13 @@ pub enum GistBufMode {
     Auto,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IndexSortOrder {
     Asc,
     Desc,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IndexNullOrder {
     NullsFirst,
     NullsLast,

@@ -31,6 +31,9 @@ pub(crate) struct Lexer<'a> {
     pub(crate) orig: &'a str, // original statements for error reporting
 }
 
+type IdxCol<'a> =
+    (&'a str, Option<&'a str>, Option<IndexSortOrder>, Option<IndexNullOrder>);
+
 impl<'a> Lexer<'a> {
     pub(crate) fn parse_statement(&mut self) -> Result<Created<'_>> {
         // Self::parse_comment0 cannot fail
@@ -800,52 +803,7 @@ impl<'a> Lexer<'a> {
 
         let cols = self
             .parser(Self::parse_list(map_res(
-                (
-                    alt((
-                        recognize((
-                            many1(alt((alphanumeric1, tag("_")))),
-                            delimited(
-                                (
-                                    Self::parse_comment0,
-                                    tag("("),
-                                    Self::parse_comment0,
-                                ),
-                                Self::parse_ident,
-                                (Self::parse_comment0, tag(")")),
-                            ),
-                        )),
-                        Self::parse_ident,
-                    )),
-                    opt(preceded(Self::parse_comment1, Self::parse_ident)),
-                    opt(preceded(
-                        Self::parse_comment1,
-                        alt((
-                            value(IndexSortOrder::Asc, tag_no_case("ASC")),
-                            value(IndexSortOrder::Desc, tag_no_case("DESC")),
-                        )),
-                    )),
-                    opt(preceded(
-                        Self::parse_comment1,
-                        alt((
-                            value(
-                                IndexNullOrder::NullsFirst,
-                                (
-                                    tag_no_case("NULLS"),
-                                    Self::parse_comment1,
-                                    tag_no_case("FIRST"),
-                                ),
-                            ),
-                            value(
-                                IndexNullOrder::NullsLast,
-                                (
-                                    tag_no_case("NULLS"),
-                                    Self::parse_comment1,
-                                    tag_no_case("LAST"),
-                                ),
-                            ),
-                        )),
-                    )),
-                ),
+                Self::parse_index_col,
                 |(name, opclass, sort1, sort2)| {
                     Ok::<
                         (&str, SqlIndexColumn),
@@ -940,6 +898,54 @@ impl<'a> Lexer<'a> {
         }
 
         Ok((idx_method, index_method))
+    }
+
+    pub(crate) fn parse_index_col(
+        input: &'a str,
+    ) -> IResult<&'a str, IdxCol<'a>> {
+        (
+            alt((
+                recognize((
+                    many1(alt((alphanumeric1, tag("_")))),
+                    delimited(
+                        (Self::parse_comment0, tag("("), Self::parse_comment0),
+                        Self::parse_ident,
+                        (Self::parse_comment0, tag(")")),
+                    ),
+                )),
+                Self::parse_ident,
+            )),
+            opt(preceded(Self::parse_comment1, Self::parse_ident)),
+            opt(preceded(
+                Self::parse_comment1,
+                alt((
+                    value(IndexSortOrder::Asc, tag_no_case("ASC")),
+                    value(IndexSortOrder::Desc, tag_no_case("DESC")),
+                )),
+            )),
+            opt(preceded(
+                Self::parse_comment1,
+                alt((
+                    value(
+                        IndexNullOrder::NullsFirst,
+                        (
+                            tag_no_case("NULLS"),
+                            Self::parse_comment1,
+                            tag_no_case("FIRST"),
+                        ),
+                    ),
+                    value(
+                        IndexNullOrder::NullsLast,
+                        (
+                            tag_no_case("NULLS"),
+                            Self::parse_comment1,
+                            tag_no_case("LAST"),
+                        ),
+                    ),
+                )),
+            )),
+        )
+            .parse(input)
     }
 
     pub(crate) fn pg_parse_include(&mut self) -> Result<Option<Vec<&'a str>>> {
@@ -2148,5 +2154,38 @@ mod tests {
         };
         let result = lexer.parse_statement().unwrap();
         assert!(matches!(result, Created::Table { .. }));
+    }
+
+    #[test]
+    fn parse_index_col_simple() {
+        let (rem, (name, opclass, sort, null_order)) =
+            Lexer::parse_index_col("col1").unwrap();
+        assert_eq!(name, "col1");
+        assert!(opclass.is_none());
+        assert!(sort.is_none());
+        assert!(null_order.is_none());
+        assert!(rem.is_empty());
+    }
+
+    #[test]
+    fn parse_index_col_with_opclass_and_sort() {
+        let (rem, (name, opclass, sort, null_order)) =
+            Lexer::parse_index_col("col1 opclass DESC NULLS FIRST").unwrap();
+        assert_eq!(name, "col1");
+        assert_eq!(opclass.unwrap(), "opclass");
+        assert_eq!(sort.unwrap(), crate::IndexSortOrder::Desc);
+        assert_eq!(null_order.unwrap(), crate::IndexNullOrder::NullsFirst);
+        assert!(rem.is_empty());
+    }
+
+    #[test]
+    fn parse_index_col_with_expression() {
+        let (rem, (name, opclass, sort, null_order)) =
+            Lexer::parse_index_col("col1(expr) opclass").unwrap();
+        assert_eq!(name, "col1(expr)");
+        assert_eq!(opclass.unwrap(), "opclass");
+        assert!(sort.is_none());
+        assert!(null_order.is_none());
+        assert!(rem.is_empty());
     }
 }
