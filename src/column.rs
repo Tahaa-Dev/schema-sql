@@ -11,7 +11,7 @@ pub struct SqlIndexColumn {
     pub predicate: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IndexMethod {
     BTree { fillfactor: Option<u8> },
 
@@ -103,7 +103,7 @@ impl IndexMethod {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GistBufMode {
     On,
     Off,
@@ -227,4 +227,136 @@ pub enum FkAction {
 pub enum PrimaryKey {
     Single(String),
     Composite(Vec<String>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Exclude {
+    column: String,
+    operator: ExcludeOperator,
+    index: ExcludeIndex,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExcludeOperator {
+    Equal,
+    NotEqual,
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+    Overlap,
+    Contains,
+    ContainedBy,
+    StrictlyLeftOf,
+    StrictlyRightOf,
+    DoesNotExtendToTheRightOf,
+    DoesNotExtendToTheLeftOf,
+    IsAdjacentTo,
+    SameAs,
+    StrictlyBelow,
+    StrictlyAbove,
+    DoesNotExtendAbove,
+    DoesNotExtendBelow,
+    IsBelow,
+    IsAbove,
+    Intersects,
+    IsHorizontal,
+    IsVertical,
+    IsPerpendicular,
+    IsParallel,
+    ContainsGeometric,
+    TextSearchMatch,
+    ContainedWithinOrEquals,
+    ContainsOrEquals,
+    StartsWith,
+    Unknown(String),
+}
+
+impl std::fmt::Display for ExcludeOperator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let symbol = match self {
+            Self::Equal => "=",
+            Self::NotEqual => "<>",
+            Self::LessThan => "<",
+            Self::LessThanOrEqual => "<=",
+            Self::GreaterThan => ">",
+            Self::GreaterThanOrEqual => ">=",
+            Self::Overlap => "&&",
+            Self::Contains => "@>",
+            Self::ContainedBy => "<@",
+            Self::StrictlyLeftOf => "<<",
+            Self::StrictlyRightOf => ">>",
+            Self::DoesNotExtendToTheRightOf => "&<",
+            Self::DoesNotExtendToTheLeftOf => "&>",
+            Self::IsAdjacentTo => "-|-",
+            Self::SameAs => "~=",
+            Self::StrictlyBelow => "<<|",
+            Self::StrictlyAbove => "|>>",
+            Self::DoesNotExtendAbove => "&<|",
+            Self::DoesNotExtendBelow => "|&>",
+            Self::IsBelow => "<^",
+            Self::IsAbove => "^>",
+            Self::Intersects => "?#",
+            Self::IsHorizontal => "?-",
+            Self::IsVertical => "?|",
+            Self::IsPerpendicular => "?-|",
+            Self::IsParallel => "?||",
+            Self::ContainsGeometric => "~",
+            Self::TextSearchMatch => "@@",
+            Self::ContainedWithinOrEquals => "<<=",
+            Self::ContainsOrEquals => ">>=",
+            Self::StartsWith => "^@",
+            Self::Unknown(s) => s.as_str(),
+        };
+        f.write_str(symbol)
+    }
+}
+
+impl ExcludeOperator {
+    fn from_string(s: &str) -> Self {
+        match s {
+            "=" => Self::Equal,
+            "<>" => Self::NotEqual,
+            "<" => Self::LessThan,
+            "<=" => Self::LessThanOrEqual,
+            ">" => Self::GreaterThan,
+            ">=" => Self::GreaterThanOrEqual,
+            "&&" => Self::Overlap,
+            "@>" => Self::Contains,
+            "<@" => Self::ContainedBy,
+            "<<" => Self::StrictlyLeftOf,
+            ">>" => Self::StrictlyRightOf,
+            "&<" => Self::DoesNotExtendToTheRightOf,
+            "&>" => Self::DoesNotExtendToTheLeftOf,
+            "-|-" => Self::IsAdjacentTo,
+            "~=" => Self::SameAs,
+            "<<|" => Self::StrictlyBelow,
+            "|>>" => Self::StrictlyAbove,
+            "&<|" => Self::DoesNotExtendAbove,
+            "|&>" => Self::DoesNotExtendBelow,
+            "<^" => Self::IsBelow,
+            "^>" => Self::IsAbove,
+            "?#" => Self::Intersects,
+            "?-" => Self::IsHorizontal,
+            "?|" => Self::IsVertical,
+            "?-|" => Self::IsPerpendicular,
+            "?||" => Self::IsParallel,
+            "~" => Self::ContainsGeometric,
+            "@@" => Self::TextSearchMatch,
+            "<<=" => Self::ContainedWithinOrEquals,
+            ">>=" => Self::ContainsOrEquals,
+            "^@" => Self::StartsWith,
+            _ => Self::Unknown(s.to_string()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExcludeIndex {
+    pub opclass: Option<String>,
+    pub sort_order: Option<IndexSortOrder>,
+    pub null_order: Option<IndexNullOrder>,
+    pub method: Option<IndexMethod>,
+    pub included_cols: Option<Vec<String>>,
+    pub predicate: Option<String>,
 }
